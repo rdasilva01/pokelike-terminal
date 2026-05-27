@@ -1,3 +1,4 @@
+import json
 import re
 from urllib.parse import unquote
 from playwright.sync_api import Page
@@ -6,15 +7,18 @@ from parsers.base import AbstractParser
 
 # Sprite filename → node type
 SPRITE_TYPE = {
-    "catchPokemon": "catch_pokemon",
-    "grass":        "wild_encounter",
-    "moveTutor":    "move_tutor",
-    "questionMark": "mystery",
+    "catchPokemon":  "catch_pokemon",
+    "grass":         "wild_encounter",
+    "moveTutor":     "move_tutor",
+    "questionMark":  "mystery",
+    "Poke Center":   "pokecenter",
     "Poke%20Center": "pokecenter",
-    "pokeCenter":   "pokecenter",
-    "shop":         "shop",
-    "itemDrop":     "item",
-    "coin":         "item",
+    "pokeCenter":    "pokecenter",
+    "shop":          "shop",
+    "itemDrop":      "item",
+    "itemIcon":      "item",
+    "coin":          "item",
+    "tradeIcon":     "trade",
 }
 
 # Boss sprites (gym leaders / elite four names as they appear in filenames)
@@ -55,14 +59,31 @@ class MapParser(AbstractParser):
 
     # ------------------------------------------------------------------ team
 
+    def _load_run_team(self, page: Page) -> list:
+        try:
+            raw = page.evaluate("() => localStorage.getItem('poke_current_run')")
+            return json.loads(raw).get("team", []) if raw else []
+        except Exception:
+            return []
+
     def _parse_team(self, page: Page) -> list:
-        slots = page.locator(".team-slot").all()
+        slots = page.locator(".map-panel-left .team-slot").all()
+        run_team = self._load_run_team(page)
         team = []
-        for slot in slots:
-            name  = self._txt(slot, ".team-slot-name")
-            level = self._parse_level(self._txt(slot, ".team-slot-lv"))
+        for i, slot in enumerate(slots):
+            name   = self._txt(slot, ".team-slot-name")
+            level  = self._parse_level(self._txt(slot, ".team-slot-lv"))
             hp_pct = self._parse_hp_pct(slot)
-            team.append({"name": name, "level": level, "hp_pct": hp_pct})
+            ls = run_team[i] if i < len(run_team) else {}
+            team.append({
+                "name":       name,
+                "level":      level,
+                "hp_pct":     hp_pct,
+                "hp_current": ls.get("currentHp"),
+                "hp_max":     ls.get("maxHp"),
+                "move_tier":  ls.get("moveTier"),
+                "types":      ls.get("types", []),
+            })
         return team
 
     def _parse_level(self, text: str) -> int | None:
@@ -93,7 +114,11 @@ class MapParser(AbstractParser):
 
     def _parse_badges(self, page: Page) -> int:
         try:
-            return len(page.locator(".badge-icon:not(.badge-icon-empty)").all())
+            return page.evaluate("""() =>
+                Array.from(document.querySelectorAll('.badge-icon'))
+                     .filter(img => img.src && img.src !== window.location.href)
+                     .length
+            """)
         except Exception:
             return 0
 

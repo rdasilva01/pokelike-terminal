@@ -30,6 +30,10 @@ class TeamSlot(TypedDict):
     name: str
     level: Optional[int]
     hp_pct: int
+    hp_current: Optional[int]
+    hp_max: Optional[int]
+    move_tier: Optional[int]
+    types: list[str]
 
 
 class MapNode(TypedDict):
@@ -47,3 +51,27 @@ class MapState(TypedDict):
     bag: list[str]
     badges: int
     nodes: list[MapNode]
+
+
+class MoveInfo(TypedDict):
+    name: str
+    type: str
+    category: str
+    power: Optional[int]
+
+
+class PokemonChoice(TypedDict):
+    name: str
+    level: Optional[int]
+    types: list[str]
+    is_shiny: bool
+    is_caught: bool
+    hp_current: Optional[int]
+    hp_max: Optional[int]
+    stats: dict[str, int]
+    move: MoveInfo
+
+
+class CatchPokemonState(TypedDict):
+    screen: str
+    choices: list[PokemonChoice]

@@ -6,6 +6,7 @@ class ScreenType(Enum):
     MAIN_MENU = auto()
     STARTER_SELECT = auto()
     MAP = auto()
+    CATCH_POKEMON = auto()
     BATTLE_TOWER_REGION_SELECT = auto()
     STAGE_SELECT = auto()
     TEAM_SELECT = auto()
@@ -18,6 +19,8 @@ def detect(page: Page) -> ScreenType:
     """Identify the current game screen by unique DOM fingerprints."""
     if _has_text(page, "Choose Your Starter"):
         return ScreenType.STARTER_SELECT
+    if _has_class(page, ".poke-choice-wrap"):
+        return ScreenType.CATCH_POKEMON
     if _has_class(page, ".team-slot"):
         return ScreenType.MAP
     if _has_text_button(page, "Normal Mode"):

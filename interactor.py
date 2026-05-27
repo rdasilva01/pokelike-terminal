@@ -16,6 +16,7 @@ from rich import box
 
 from browser import connect_to_chrome
 from screen_detector import detect, ScreenType
+from parsers.catch_pokemon import CatchPokemonParser
 from parsers.main_menu import MainMenuParser
 from parsers.map_screen import MapParser
 from parsers.starter_select import StarterSelectParser
@@ -26,6 +27,7 @@ PARSER_MAP = {
     ScreenType.MAIN_MENU:      MainMenuParser(),
     ScreenType.STARTER_SELECT: StarterSelectParser(),
     ScreenType.MAP:            MapParser(),
+    ScreenType.CATCH_POKEMON:  CatchPokemonParser(),
 }
 
 ROMAN = {"I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6"}
@@ -113,19 +115,20 @@ def render(
     # Header
     dot = "[bold yellow]●[/]" if refresh_flash else "[dim]·[/]"
 
-    if screen == ScreenType.MAP:
+    if screen == ScreenType.CATCH_POKEMON:
+        choices = state.get("choices", [])
+        parts = [c["name"] for c in choices]
+        header = Text.assemble(
+            ("  CATCH POKÉMON  ", "bold cyan"),
+            ("  ".join(parts), "white"),
+        )
+        header.append_text(Text.from_markup(f"   {dot}"))
+    elif screen == ScreenType.MAP:
         stage = state.get("stage", {})
         boss  = stage.get("boss") or "?"
         btype = stage.get("boss_type") or ""
         stage_num = stage.get("number") or "?"
-        team  = state.get("team", [])
         badges = state.get("badges", 0)
-        team_text = Text()
-        for p in team:
-            hp = p.get("hp_pct", 100)
-            color = "green3" if hp > 50 else "yellow" if hp > 20 else "red"
-            team_text.append(f" {p['name']} Lv{p['level']} ", style="white")
-            team_text.append(f"[{hp}%]", style=color)
         header = Text.assemble(
             ("  MAP ", "dim"),
             (f"{stage_num}", "bold cyan"),
@@ -133,9 +136,7 @@ def render(
             (f" ({btype})", "dim"),
             ("  badges: ", "dim"),
             (str(badges), "yellow"),
-            ("   ", ""),
         )
-        header.append_text(team_text)
         header.append_text(Text.from_markup(f"   {dot}"))
     else:
         user = state.get("logged_in_user") or "not logged in"
@@ -192,6 +193,46 @@ def render(
         outer.add_row(menu_table, side)
         layout.add_row(Panel(outer, title="[dim]actions[/]", box=box.ROUNDED, padding=(1, 2)))
         footer_hint = "↑↓ navigate   ◀▶ starter   Enter / letter select"
+    elif screen == ScreenType.MAP:
+        # --- left: team panel ---
+        team_table = Table.grid(padding=(0, 1))
+        team_table.add_column()
+        for p in state.get("team", []):
+            hp        = p.get("hp_pct", 100)
+            hp_cur    = p.get("hp_current")
+            hp_max    = p.get("hp_max")
+            move_tier = p.get("move_tier")
+            types     = p.get("types", [])
+            color     = "green3" if hp > 50 else "yellow" if hp > 20 else "red"
+            hp_str    = f"{hp_cur}/{hp_max}" if hp_cur is not None else f"{hp}%"
+            move_str  = (f"T{move_tier} {types[0]}" if move_tier is not None and types else "")
+            team_table.add_row(Text(p["name"], style=f"bold {color}"))
+            team_table.add_row(Text("/".join(types), style="dim"))
+            team_table.add_row(Text(f"Lv{p['level']}  {move_str}", style="dim"))
+            team_table.add_row(Text(f"HP {hp_str}", style=color))
+            team_table.add_row(Text(""))  # spacer
+
+        # --- right: bag panel ---
+        bag_table = Table.grid(padding=(0, 1))
+        bag_table.add_column()
+        bag = state.get("bag", [])
+        if bag:
+            for item in bag:
+                bag_table.add_row(Text(str(item), style="white"))
+        else:
+            bag_table.add_row(Text("empty", style="dim"))
+
+        three_col = Table.grid(padding=(0, 1))
+        three_col.add_column(ratio=1)
+        three_col.add_column(ratio=2)
+        three_col.add_column(ratio=1)
+        three_col.add_row(
+            Panel(team_table, title="[dim]team[/]", box=box.SIMPLE),
+            Panel(menu_table, title="[dim]actions[/]", box=box.ROUNDED, padding=(1, 1)),
+            Panel(bag_table,  title="[dim]bag[/]",  box=box.SIMPLE),
+        )
+        layout.add_row(three_col)
+        footer_hint = "↑↓ navigate   Enter / letter select"
     else:
         layout.add_row(Panel(menu_table, title="[dim]actions[/]", box=box.ROUNDED, padding=(1, 2)))
         footer_hint = "↑↓ navigate   Enter / letter select"
@@ -269,10 +310,32 @@ def build_main_menu_items(
 
 
 def show_raw_json(state: dict) -> str:
-    syntax = Syntax(json.dumps(state, indent=2), "json", theme="monokai", line_numbers=True)
-    panel = Panel(syntax, title="[bold yellow]RAW JSON[/] [dim](any key to go back)[/]", box=box.DOUBLE_EDGE)
-    with Live(panel, console=console, screen=True, refresh_per_second=1):
-        read_key()
+    lines = json.dumps(state, indent=2).splitlines()
+    offset = 0
+
+    def make_panel():
+        term_h = max(5, console.size.height - 6)
+        visible = lines[offset:offset + term_h]
+        syntax = Syntax("\n".join(visible), "json", theme="monokai", line_numbers=True, start_line=offset + 1)
+        pct = f"{offset + 1}-{min(offset + term_h, len(lines))}/{len(lines)}"
+        return Panel(
+            syntax,
+            title=f"[bold yellow]RAW JSON[/] [dim](↑↓ scroll · any other key to go back)[/]",
+            subtitle=f"[dim]{pct}[/]",
+            box=box.DOUBLE_EDGE,
+        )
+
+    with Live(make_panel(), console=console, screen=True, refresh_per_second=4) as live:
+        while True:
+            key = read_key()
+            if key == 'UP':
+                offset = max(0, offset - 1)
+            elif key == 'DOWN':
+                term_h = max(5, console.size.height - 6)
+                offset = min(max(0, len(lines) - term_h), offset + 1)
+            else:
+                break
+            live.update(make_panel())
     return ""
 
 
@@ -313,6 +376,7 @@ NODE_TYPE_LABEL = {
     "pokecenter":    "Pokémon Center",
     "shop":          "Shop",
     "item":          "Item",
+    "trade":         "Trade",
     "boss":          "GYM LEADER",
     "start":         "Start",
 }
@@ -353,10 +417,51 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
     return items
 
 
+def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
+    choices = state.get("choices", [])
+
+    def pick(idx):
+        def _action():
+            page.locator(".poke-choice-wrap").nth(idx).click()
+            return f"Selected {choices[idx]['name']}"
+        return _action
+
+    def skip():
+        page.evaluate("""() => {
+            const btn = Array.from(document.querySelectorAll('button'))
+                .find(b => b.textContent.includes('Skip'));
+            if (btn) btn.click();
+        }""")
+        return "Skipped."
+
+    items = []
+    for i, c in enumerate(choices):
+        shiny = " ★" if c.get("is_shiny") else ""
+        caught = " ✓" if c.get("is_caught") else ""
+        types = "/".join(c.get("types", []))
+        label = f"{c['name']}{shiny}{caught}  Lv{c['level']}  [{types}]"
+        items.append(MenuItem(label, str(i + 1), pick(i)))
+
+    items.append(MenuItem("Skip (flee)", "S", skip))
+
+    def reload_page():
+        page.reload()
+        return "Page reloaded."
+
+    items += [
+        MenuItem("Raw JSON", "J", lambda: show_raw_json(state)),
+        MenuItem("Reload Page", "P", reload_page),
+        MenuItem("Refresh",    "R", refresh_fn),
+        MenuItem("Quit",       "Q", lambda: "QUIT"),
+    ]
+    return items
+
+
 MENU_BUILDERS = {
     ScreenType.MAIN_MENU:      build_main_menu_items,
     ScreenType.STARTER_SELECT: build_starter_select_items,
     ScreenType.MAP:            build_map_items,
+    ScreenType.CATCH_POKEMON:  build_catch_pokemon_items,
 }
 
 
