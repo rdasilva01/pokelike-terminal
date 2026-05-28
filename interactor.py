@@ -120,7 +120,7 @@ def render(
     bag_mode=None,
 ) -> Align:
     term_w = console.size.width
-    panel_w = min(84, term_w - 4)
+    panel_w = min(92, term_w - 4)
 
     layout = Table.grid(padding=(0, 1))
     layout.add_column(ratio=1)
@@ -313,7 +313,7 @@ def render(
             bag_table.add_row(Text("empty", style="dim"))
 
         three_col = Table.grid(padding=(0, 1))
-        three_col.add_column(ratio=2)
+        three_col.add_column(ratio=3)
         three_col.add_column(ratio=4)
         three_col.add_column(ratio=1)
         three_col.add_row(
@@ -546,6 +546,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
                 page.locator(".map-panel-left .team-slot").nth(src).drag_to(
                     page.locator(".map-panel-left .team-slot").nth(dst)
                 )
+                page.mouse.move(0, 0)
                 swap_source[0] = None
                 return f"Swapped {team[src]['name']} and {team[dst]['name']}"
             items.append(MenuItem(p["name"], shortcut, do_swap))
