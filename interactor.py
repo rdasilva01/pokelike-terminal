@@ -18,6 +18,7 @@ from rich import box
 from browser import connect_to_chrome
 from screen_detector import detect, ScreenType
 from parsers.battle import BattleParser
+from parsers.champion import ChampionParser
 from parsers.pokemon_received import PokemonReceivedParser
 from parsers.trade_offer import TradeOfferParser
 from parsers.catch_pokemon import CatchPokemonParser
@@ -39,6 +40,7 @@ PARSER_MAP = {
     ScreenType.CATCH_POKEMON:  CatchPokemonParser(),
     ScreenType.ITEM_SELECT:    ItemSelectParser(),
     ScreenType.ITEM_EQUIP:     ItemEquipParser(),
+    ScreenType.CHAMPION:       ChampionParser(),
 }
 
 ROMAN = {"I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6"}
@@ -164,6 +166,16 @@ def render(
             (f"{p.get('name','?')}{shiny}", "bold white"),
             (f"  {p.get('level','')}  [{types}]", "dim"),
             (f"  {p.get('move','')} {p.get('move_power','')}", "white"),
+        )
+        header.append_text(Text.from_markup(f"   {dot}"))
+    elif screen == ScreenType.CHAMPION:
+        run_count = state.get("run_count", "")
+        team = state.get("team", [])
+        names = "  ".join(f"{p['name']} {p['level']}" for p in team)
+        header = Text.assemble(
+            ("  CHAMPION!  ", "bold yellow"),
+            (run_count, "gold1"),
+            (f"  {names}", "white"),
         )
         header.append_text(Text.from_markup(f"   {dot}"))
     elif screen == ScreenType.TRADE_OFFER:
@@ -345,9 +357,19 @@ def render(
 # Auto-starter click (called when STARTER_SELECT screen is detected)
 # ---------------------------------------------------------------------------
 
+def _click_center(page) -> None:
+    vp = page.viewport_size or {"width": 800, "height": 600}
+    page.mouse.move(vp["width"] // 2, vp["height"] // 2)
+    page.mouse.click(vp["width"] // 2, vp["height"] // 2)
+    page.mouse.move(0, 0)
+
+
 def click_starter(page, starter_idx: int) -> str:
-    """Click the poke-card at starter_idx (0=grass, 1=fire, 2=water)."""
-    page.locator(".poke-card").nth(starter_idx).click()
+    page.evaluate("""(i) => {
+        const cards = Array.from(document.querySelectorAll('.poke-card'))
+            .filter(c => c.getBoundingClientRect().width > 0)
+        if (cards[i]) cards[i].click()
+    }""", starter_idx)
     return f"Auto-selected starter [{starter_idx}]"
 
 
@@ -614,8 +636,8 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
     def skip():
         page.evaluate("""() => {
             const btn = Array.from(document.querySelectorAll('button'))
-                .find(b => b.textContent.includes('Skip'));
-            if (btn) btn.click();
+                .find(b => b.textContent.includes('Skip') && b.getBoundingClientRect().width > 0)
+            if (btn) btn.click()
         }""")
         return "Skipped."
 
@@ -834,6 +856,31 @@ def build_item_select_items(state: dict, page, refresh_fn: Callable, selected_st
     return items
 
 
+def build_champion_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
+    def click_btn(text):
+        def _action():
+            page.evaluate("""(t) => {
+                const btn = Array.from(document.querySelectorAll('button'))
+                    .find(b => b.textContent.trim() === t && b.getBoundingClientRect().width > 0)
+                if (btn) btn.click()
+            }""", text)
+            return f"Clicked {text}"
+        return _action
+
+    def reload_page():
+        page.reload()
+        return "Page reloaded."
+
+    return [
+        MenuItem("Play Again",       "P", click_btn("Play Again")),
+        MenuItem("Climb the Tower",  "T", click_btn("🗼 Climb the Tower")),
+        MenuItem("Hall of Fame",     "H", click_btn("🏛️ Hall of Fame")),
+        MenuItem("Raw JSON",         "J", lambda: show_raw_json(state)),
+        MenuItem("Reload Page",      "R", reload_page),
+        MenuItem("Quit",             "Q", lambda: "QUIT"),
+    ]
+
+
 MENU_BUILDERS = {
     ScreenType.MAIN_MENU:      build_main_menu_items,
     ScreenType.STARTER_SELECT: build_starter_select_items,
@@ -844,6 +891,7 @@ MENU_BUILDERS = {
     ScreenType.CATCH_POKEMON:  build_catch_pokemon_items,
     ScreenType.ITEM_SELECT:    build_item_select_items,
     ScreenType.ITEM_EQUIP:     build_item_equip_items,
+    ScreenType.CHAMPION:       build_champion_items,
 }
 
 
@@ -890,14 +938,21 @@ def run_tui(page):
                 if (btn) btn.click()
             }""")
             return "Game over — clicked Try Again"
+        if new == ScreenType.EVOLUTION:
+            _click_center(page)
+            return "Evolution — clicked to advance"
         return ""
 
     def apply_change(prev_screen: ScreenType) -> None:
         """Detect new screen, fire auto-actions if changed, re-detect after auto-action."""
         nonlocal screen, state, selected, last_auto_refresh, refresh_flash_until
-        screen = detect(page)
-        p = PARSER_MAP.get(screen)
-        state = p.parse(page) if p else _unknown_state(page, screen)
+        try:
+            screen = detect(page)
+            p = PARSER_MAP.get(screen)
+            state = p.parse(page) if p else _unknown_state(page, screen)
+        except Exception:
+            last_auto_refresh = time.monotonic()
+            return
         last_auto_refresh = time.monotonic()
         refresh_flash_until = time.monotonic() + 1.2
         if screen != prev_screen:
@@ -905,9 +960,12 @@ def run_tui(page):
             auto_msg = handle_screen_change(prev_screen, screen)
             if auto_msg:
                 time.sleep(0.8)
-                screen = detect(page)
-                p = PARSER_MAP.get(screen)
-                state = p.parse(page) if p else _unknown_state(page, screen)
+                try:
+                    screen = detect(page)
+                    p = PARSER_MAP.get(screen)
+                    state = p.parse(page) if p else _unknown_state(page, screen)
+                except Exception:
+                    pass
 
     def do_refresh():
         prev = screen
@@ -936,6 +994,8 @@ def run_tui(page):
             if key is None:
                 if time.monotonic() - last_auto_refresh >= AUTO_REFRESH_INTERVAL:
                     do_refresh()
+                    if screen == ScreenType.EVOLUTION:
+                        _click_center(page)
                 continue
 
             if key == 'UP':
