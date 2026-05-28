@@ -67,6 +67,6 @@ class CatchPokemonParser(AbstractParser):
 
     def _txt(self, locator, selector: str) -> str:
         try:
-            return locator.locator(selector).first.inner_text().strip()
+            return locator.locator(selector).first.inner_text(timeout=2000).strip()
         except Exception:
             return ""

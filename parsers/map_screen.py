@@ -103,12 +103,11 @@ class MapParser(AbstractParser):
 
     def _parse_bag(self, page: Page) -> list:
         try:
-            panel = page.locator(".map-panel-right").first
-            text = panel.inner_text()
-            if "Bag empty" in text:
-                return []
-            # TODO: parse actual item names when bag has items
-            return []
+            return page.evaluate("""() =>
+                Array.from(document.querySelectorAll('#item-bar .item-badge'))
+                    .filter(b => b.getBoundingClientRect().width > 0)
+                    .map((b, i) => ({ name: b.querySelector('img')?.alt?.trim() || b.textContent.trim(), index: i }))
+            """)
         except Exception:
             return []
 
@@ -128,6 +127,16 @@ class MapParser(AbstractParser):
         nodes = page.evaluate("""() => {
             const svg = document.querySelector('.screen.active svg')
             if (!svg) return []
+
+            // Build sprite -> label map from localStorage for accessible trainer nodes
+            const spriteLabelMap = {}
+            try {
+                const run = JSON.parse(localStorage.getItem('poke_current_run') || '{}')
+                Object.values(run.map?.nodes || {}).filter(n => n.accessible && n.trainerSprite).forEach(n => {
+                    try { spriteLabelMap[n.trainerSprite] = getNodeLabel(n, run) } catch(e) {}
+                })
+            } catch(e) {}
+
             return Array.from(svg.children)
                 .filter(el => el.tagName === 'g')
                 .map((g, i) => {
@@ -142,7 +151,8 @@ class MapParser(AbstractParser):
                         completed: g.querySelector('circle') !== null,
                         accessible: style.includes('pointer'),
                         locked: style.includes('0.75'),
-                        transform: tx
+                        transform: tx,
+                        nodeLabel: spriteLabelMap[sprite] || ''
                     }
                 })
         }""")
@@ -157,12 +167,21 @@ class MapParser(AbstractParser):
                 state = "available"
             else:
                 state = "locked"
+            # Extract Pokémon type from label e.g. "Officer — +2 Levels — Fire Pokemon"
+            poke_type = ""
+            if n.get("nodeLabel"):
+                parts = [p.strip() for p in n["nodeLabel"].split("—")]
+                for part in reversed(parts):
+                    if "Pokemon" in part or "Type" in part:
+                        poke_type = part.replace("Pokemon", "").replace("Type", "").strip()
+                        break
             result.append({
                 "index":      n["index"],
                 "type":       node_type,
                 "state":      state,
                 "accessible": n["accessible"],
                 "sprite":     sprite,
+                "poke_type":  poke_type,
             })
         return result
 
@@ -179,6 +198,6 @@ class MapParser(AbstractParser):
 
     def _txt(self, locator, selector: str) -> str:
         try:
-            return locator.locator(selector).first.inner_text().strip()
+            return locator.locator(selector).first.inner_text(timeout=2000).strip()
         except Exception:
             return ""

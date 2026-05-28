@@ -25,6 +25,6 @@ class StarterSelectParser(AbstractParser):
 
     def _text(self, locator, selector: str) -> str:
         try:
-            return locator.locator(selector).first.inner_text().strip()
+            return locator.locator(selector).first.inner_text(timeout=2000).strip()
         except Exception:
             return ""
