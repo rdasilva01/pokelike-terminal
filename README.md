@@ -29,11 +29,28 @@ python -m playwright install chromium
 
 ## Setup
 
+### Windows
+
 Chrome must run with remote debugging enabled. `launcher.py` does this automatically. To do it manually:
 
 ```
 "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\ChromeDebug
 ```
+
+### Ubuntu 22.04
+
+```bash
+# Install Chrome
+wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+sudo apt update && sudo apt install -y google-chrome-stable
+
+# Install Python dependencies
+pip install playwright rich
+python -m playwright install chromium
+```
+
+Then run normally — `launcher.py` will find Chrome automatically and use `~/.chrome-debug` as the profile directory.
 
 ## Usage
 
