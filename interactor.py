@@ -1403,8 +1403,16 @@ class PokelikeApp(App):
 
 def main():
     PokelikeApp().run()
-    # Reset terminal colours/attributes that Textual may leave behind
-    sys.stdout.write("\033[0m\033[?25h")
+    # Reset terminal: SGR attributes, palette colours, cursor visibility
+    sys.stdout.write(
+        "\033[0m"        # reset SGR attributes
+        "\033[39m"       # reset foreground to default
+        "\033[49m"       # reset background to default
+        "\033]104\007"   # reset all 256 palette entries
+        "\033]110\007"   # reset terminal foreground colour
+        "\033]111\007"   # reset terminal background colour
+        "\033[?25h"      # show cursor
+    )
     sys.stdout.flush()
 
 
