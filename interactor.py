@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -1195,9 +1196,9 @@ class PokedexScreen(Screen):
 
 class PokelikeApp(App):
 
-    def __init__(self, page) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.page = page
+        self.page = None
         self.game_screen = ScreenType.UNKNOWN
         self.state: dict = {}
         self.selected = 0
@@ -1206,16 +1207,40 @@ class PokelikeApp(App):
         self.bag_mode = [False]
         self.flash_until = 0.0
         self._items: list[MenuItem] = []
+        self._browser_done = threading.Event()
 
     def compose(self) -> ComposeResult:
-        yield Static(id="display")
+        yield Static("[dim]Connecting to Chrome…[/]", id="display")
 
     def on_mount(self) -> None:
+        # Run the browser connection in a dedicated thread so Playwright's
+        # internal event loop doesn't conflict with Textual's asyncio loop.
+        t = threading.Thread(target=self._browser_thread, daemon=True)
+        t.start()
+
+    def _browser_thread(self) -> None:
+        try:
+            with connect_to_chrome() as page:
+                self.call_from_thread(self._on_connected, page)
+                self._browser_done.wait()   # keep Playwright context alive
+        except Exception as e:
+            self.call_from_thread(self._on_connect_error, str(e))
+
+    def _on_connected(self, page) -> None:
+        self.page = page
         self._do_refresh()
         self.set_interval(AUTO_REFRESH_INTERVAL, self._do_refresh)
 
+    def _on_connect_error(self, msg: str) -> None:
+        self.query_one("#display", Static).update(f"[red][Error][/] {msg}")
+
+    def on_unmount(self) -> None:
+        self._browser_done.set()
+
     @work(thread=True)
     def _do_refresh(self) -> None:
+        if self.page is None:
+            return
         try:
             prev = self.game_screen
             new_screen = detect(self.page)
@@ -1342,14 +1367,7 @@ class PokelikeApp(App):
 # ---------------------------------------------------------------------------
 
 def main():
-    print("Connecting to Chrome...")
-    try:
-        with connect_to_chrome() as page:
-            print(f"Connected: {page.url}\n")
-            PokelikeApp(page).run()
-    except RuntimeError as e:
-        print(f"[Error] {e}")
-        sys.exit(1)
+    PokelikeApp().run()
 
 
 if __name__ == "__main__":
