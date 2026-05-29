@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -972,9 +973,9 @@ class PokedexScreen(Screen):
         "Late":         "R3M2, R3M3",
     }
 
-    def __init__(self, page) -> None:
+    def __init__(self, app) -> None:
         super().__init__()
-        self.page = page
+        self._app = app
         self.mode = "search"
         self.query = ""
         self.scroll = 0
@@ -993,8 +994,7 @@ class PokedexScreen(Screen):
 
     @work(thread=True)
     def _load_data(self) -> None:
-        try:
-            data = self.page.evaluate("""() => {
+        js = """() => {
                 const species = JSON.parse(localStorage.getItem('pkrl_species_list') || '[]')
                 const dex     = JSON.parse(localStorage.getItem('poke_dex') || '{}')
                 return species.map(s => {
@@ -1009,7 +1009,11 @@ class PokedexScreen(Screen):
                         floors: locs.towerFloors || [],
                     }
                 })
-            }""")
+            }"""
+        try:
+            data = self._app.run_in_browser(lambda: self._app.page.evaluate(js))
+            if not isinstance(data, list):
+                data = []
         except Exception:
             data = []
 
@@ -1195,6 +1199,13 @@ class PokedexScreen(Screen):
 # ---------------------------------------------------------------------------
 
 class PokelikeApp(App):
+    """
+    All Playwright operations run in a single dedicated browser thread to satisfy
+    greenlet's requirement that sync-playwright objects are used from the thread
+    that created them. The browser thread owns the refresh loop and processes
+    action tasks submitted via _task_queue. Textual runs its asyncio loop in the
+    main thread, receiving UI updates via call_from_thread.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -1207,116 +1218,145 @@ class PokelikeApp(App):
         self.bag_mode = [False]
         self.flash_until = 0.0
         self._items: list[MenuItem] = []
-        self._browser_done = threading.Event()
+        # Browser thread communication
+        self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._stop = threading.Event()
 
     def compose(self) -> ComposeResult:
         yield Static("[dim]Connecting to Chrome…[/]", id="display")
 
     def on_mount(self) -> None:
-        # Run the browser connection in a dedicated thread so Playwright's
-        # internal event loop doesn't conflict with Textual's asyncio loop.
-        t = threading.Thread(target=self._browser_thread, daemon=True)
+        t = threading.Thread(target=self._browser_loop, daemon=True)
         t.start()
 
-    def _browser_thread(self) -> None:
+    def on_unmount(self) -> None:
+        self._stop.set()
+
+    # ------------------------------------------------------------------
+    # Browser thread — owns ALL Playwright calls
+    # ------------------------------------------------------------------
+
+    def _browser_loop(self) -> None:
         try:
             with connect_to_chrome() as page:
-                self.call_from_thread(self._on_connected, page)
-                self._browser_done.wait()   # keep Playwright context alive
+                self.page = page
+                self.call_from_thread(
+                    self.query_one("#display", Static).update,
+                    f"[green]Connected[/] {page.url}"
+                )
+                last_refresh = 0.0
+                while not self._stop.is_set():
+                    # Process pending actions first
+                    while True:
+                        try:
+                            task, result_holder, done_event = self._task_queue.get_nowait()
+                            try:
+                                result_holder[0] = task()
+                            except Exception as e:
+                                result_holder[0] = f"Error: {e}"
+                            done_event.set()
+                        except queue.Empty:
+                            break
+
+                    # Auto-refresh
+                    now = time.monotonic()
+                    if now - last_refresh >= AUTO_REFRESH_INTERVAL:
+                        last_refresh = now
+                        try:
+                            prev = self.game_screen
+                            new_screen = detect(page)
+                            p = PARSER_MAP.get(new_screen)
+                            new_state = p.parse(page) if p else _unknown_state(page, new_screen)
+                            self.call_from_thread(self._apply_state, prev, new_screen, new_state)
+                        except Exception:
+                            pass
+
+                    self._stop.wait(timeout=0.05)
+
         except Exception as e:
-            self.call_from_thread(self._on_connect_error, str(e))
+            try:
+                self.call_from_thread(
+                    self.query_one("#display", Static).update,
+                    f"[red][Error][/] {e}"
+                )
+            except Exception:
+                pass
 
-    def _on_connected(self, page) -> None:
-        self.page = page
-        self._do_refresh()
-        self.set_interval(AUTO_REFRESH_INTERVAL, self._do_refresh)
+    def run_in_browser(self, fn) -> str:
+        """Submit fn to the browser thread and block until it completes."""
+        result_holder = [None]
+        done = threading.Event()
+        self._task_queue.put((fn, result_holder, done))
+        done.wait()
+        return result_holder[0] or ""
 
-    def _on_connect_error(self, msg: str) -> None:
-        self.query_one("#display", Static).update(f"[red][Error][/] {msg}")
-
-    def on_unmount(self) -> None:
-        self._browser_done.set()
-
-    @work(thread=True)
-    def _do_refresh(self) -> None:
-        if self.page is None:
-            return
-        try:
-            prev = self.game_screen
-            new_screen = detect(self.page)
-            p = PARSER_MAP.get(new_screen)
-            new_state = p.parse(self.page) if p else _unknown_state(self.page, new_screen)
-            self.call_from_thread(self._apply_state, prev, new_screen, new_state)
-        except Exception:
-            pass
+    # ------------------------------------------------------------------
+    # UI updates (run on Textual main thread via call_from_thread)
+    # ------------------------------------------------------------------
 
     def _apply_state(self, prev: ScreenType, new_screen: ScreenType, new_state: dict) -> None:
-        screen_changed = (new_screen != prev)
+        changed = new_screen != prev
         self.game_screen = new_screen
         self.state = new_state
         self.flash_until = time.monotonic() + 1.2
-        if screen_changed:
+        if changed:
             self.selected = 0
-            self._handle_screen_change(prev, new_screen)
+            self._handle_screen_change_ui(prev, new_screen)
         self._rebuild()
 
-    def _handle_screen_change(self, prev: ScreenType, new: ScreenType) -> None:
+    def _handle_screen_change_ui(self, prev: ScreenType, new: ScreenType) -> None:
+        """Queue auto-actions for screen transitions (browser thread)."""
+        page = self.page
         if new == ScreenType.STARTER_SELECT:
-            click_starter(self.page, self.selected_starter)
-            self.call_later(self._do_refresh)
+            idx = self.selected_starter
+            self._task_queue.put((lambda: click_starter(page, idx), [None], threading.Event()))
         elif new == ScreenType.BADGE_OBTAINED:
-            self.page.evaluate("""() => {
-                const btn = Array.from(document.querySelectorAll('.btn-primary'))
-                    .find(b => b.textContent.includes('Next Map'))
-                if (btn) btn.click()
-            }""")
-            self.call_later(self._do_refresh)
+            js = """() => { const b = Array.from(document.querySelectorAll('.btn-primary')).find(b => b.textContent.includes('Next Map')); if (b) b.click() }"""
+            self._task_queue.put((lambda: page.evaluate(js), [None], threading.Event()))
         elif new == ScreenType.GAME_OVER:
-            self.page.evaluate("""() => {
-                const btn = Array.from(document.querySelectorAll('.btn-primary'))
-                    .find(b => b.textContent.trim() === 'Try Again')
-                if (btn) btn.click()
-            }""")
-            self.call_later(self._do_refresh)
+            js = """() => { const b = Array.from(document.querySelectorAll('.btn-primary')).find(b => b.textContent.trim() === 'Try Again'); if (b) b.click() }"""
+            self._task_queue.put((lambda: page.evaluate(js), [None], threading.Event()))
         elif new == ScreenType.EVOLUTION:
-            _click_center(self.page)
-            self.call_later(self._do_refresh)
+            self._task_queue.put((lambda: _click_center(page), [None], threading.Event()))
 
     def _rebuild(self) -> None:
+        if self.page is None:
+            return
         self._items = self._build_current_items()
         if self._items:
             self.selected = max(0, min(self.selected, len(self._items) - 1))
         flash = time.monotonic() < self.flash_until
         renderable = render(
             self.game_screen, self.state, self._items, self.selected,
-            flash, self.selected_starter, self.swap_source, self.bag_mode
+            flash, self.selected_starter, self.swap_source, self.bag_mode,
         )
         self.query_one("#display", Static).update(renderable)
 
     def _build_current_items(self) -> list[MenuItem]:
         def noop_refresh():
-            self._do_refresh()
-            return ""
+            return ""  # refresh happens automatically in browser loop
 
         if self.game_screen == ScreenType.MAP:
             return build_map_items(
-                self.state, self.page, noop_refresh, self.selected_starter,
-                self.swap_source, self.bag_mode
+                self.state, self.page, noop_refresh,
+                self.selected_starter, self.swap_source, self.bag_mode,
             )
-        else:
-            self.swap_source[0] = None
-            self.bag_mode[0] = False
-            builder = MENU_BUILDERS.get(self.game_screen)
-            if builder:
-                return builder(self.state, self.page, noop_refresh, self.selected_starter)
-            return _fallback_items(noop_refresh, self.page)
+        self.swap_source[0] = None
+        self.bag_mode[0] = False
+        builder = MENU_BUILDERS.get(self.game_screen)
+        if builder:
+            return builder(self.state, self.page, noop_refresh, self.selected_starter)
+        return _fallback_items(noop_refresh, self.page)
+
+    # ------------------------------------------------------------------
+    # Input
+    # ------------------------------------------------------------------
 
     def on_key(self, event) -> None:
         key = event.key
         items = self._items
         if not items:
             return
-
         if key == "up":
             self.selected = (self.selected - 1) % len(items)
             self._rebuild()
@@ -1325,20 +1365,17 @@ class PokelikeApp(App):
             self._rebuild()
         elif key == "left":
             gen = self.state.get("selected_gen") or "I"
-            n = len(get_starters(gen))
-            self.selected_starter = (self.selected_starter - 1) % n
+            self.selected_starter = (self.selected_starter - 1) % max(1, len(get_starters(gen)))
             self._rebuild()
         elif key == "right":
             gen = self.state.get("selected_gen") or "I"
-            n = len(get_starters(gen))
-            self.selected_starter = (self.selected_starter + 1) % n
+            self.selected_starter = (self.selected_starter + 1) % max(1, len(get_starters(gen)))
             self._rebuild()
         elif key == "enter":
             self._execute_item(self.selected)
         elif key in ("escape", "q"):
             self.exit()
         else:
-            # single-char shortcut matching
             char = key.lower() if len(key) == 1 else None
             if char:
                 for i, item in enumerate(items):
@@ -1348,18 +1385,16 @@ class PokelikeApp(App):
 
     @work(thread=True)
     def _execute_item(self, index: int) -> None:
-        result = _execute(self._items, index)
+        """Submit action to browser thread; handle sentinel results on main thread."""
+        items = self._items
+        result = self.run_in_browser(lambda: _execute(items, index))
         if result == "QUIT":
             self.call_from_thread(self.exit)
         elif result == "SHOW_POKEDEX":
-            self.call_from_thread(self.push_screen, PokedexScreen(self.page))
+            self.call_from_thread(self.push_screen, PokedexScreen(self))
         elif result == "SHOW_JSON":
-            self.call_from_thread(self.push_screen, JsonScreen(json.dumps(self.state, indent=2)))
-        else:
-            self.call_from_thread(self._do_refresh_sync)
-
-    def _do_refresh_sync(self) -> None:
-        self._do_refresh()
+            state_json = json.dumps(self.state, indent=2)
+            self.call_from_thread(self.push_screen, JsonScreen(state_json))
 
 
 # ---------------------------------------------------------------------------
