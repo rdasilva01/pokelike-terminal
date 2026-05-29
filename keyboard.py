@@ -26,37 +26,54 @@ if sys.platform == "win32":
         return None
 
 else:
+    import os
     import select
     import termios
     import tty
+
+    _ARROW_SEQS = {
+        b'[A': 'UP',  b'[B': 'DOWN',  b'[D': 'LEFT',  b'[C': 'RIGHT',
+        b'OA': 'UP',  b'OB': 'DOWN',  b'OD': 'LEFT',  b'OC': 'RIGHT',
+    }
+
+    def _read_one(fd: int) -> bytes:
+        return os.read(fd, 1)
+
+    def _parse(fd: int, ch: bytes) -> str:
+        if ch == b'\x1b':
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                seq = os.read(fd, 2)
+                return _ARROW_SEQS.get(seq, 'ESC')
+            return 'ESC'
+        if ch in (b'\r', b'\n'):
+            return 'ENTER'
+        if ch == b'\x03':
+            raise KeyboardInterrupt
+        if ch == b'\x04':
+            return 'ESC'
+        if not ch:
+            return ''
+        return ch.decode('utf-8', errors='replace').lower()
 
     def read_key() -> str:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == '\x1b':
-                # Check if more bytes follow (arrow keys send \x1b[A etc.)
-                r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if r:
-                    seq = sys.stdin.read(2)
-                    return {
-                        '[A': 'UP', '[B': 'DOWN', '[D': 'LEFT', '[C': 'RIGHT',
-                    }.get(seq, 'ESC')
-                return 'ESC'
-            if ch == '\r' or ch == '\n':
-                return 'ENTER'
-            if ch == '\x03':   # Ctrl-C
-                raise KeyboardInterrupt
-            if ch == '\x04':   # Ctrl-D
-                return 'ESC'
-            return ch.lower()
+            return _parse(fd, _read_one(fd))
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     def poll_key(timeout: float = 0.1) -> str | None:
-        r, _, _ = select.select([sys.stdin], [], [], timeout)
-        if r:
-            return read_key()
-        return None
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            # TCSANOW: apply immediately without flushing buffered input
+            tty.setcbreak(fd, termios.TCSANOW)
+            r, _, _ = select.select([fd], [], [], timeout)
+            if not r:
+                return None
+            return _parse(fd, _read_one(fd))
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)

@@ -428,11 +428,14 @@ def show_raw_json(state: dict) -> str:
             title=f"[bold yellow]RAW JSON[/] [dim](↑↓ scroll · any other key to go back)[/]",
             subtitle=f"[dim]{pct}[/]",
             box=box.DOUBLE_EDGE,
+            width=console.size.width,
         )
 
     with Live(make_panel(), console=console, screen=True, refresh_per_second=4) as live:
         while True:
-            key = read_key()
+            key = poll_key(timeout=0.25)
+            if key is None:
+                continue
             if key == 'UP':
                 offset = max(0, offset - 1)
             elif key == 'DOWN':
@@ -516,12 +519,11 @@ def show_pokedex(page) -> str:
     def make_panel():
         term_w = console.size.width
         term_h = max(5, console.size.height - 4)
-        panel_w = term_w - 2
+        panel_w = min(160, max(60, term_w - 10))
         # reserve 4 lines: panel borders (2) + hint row + blank separator
         visible_rows = max(1, term_h - 6)
-
         body = Table.grid(padding=(0, 1))
-        body.add_column()
+        body.add_column(no_wrap=True, overflow="fold")
 
         if mode == "search":
             cursor = "_" if int(time.monotonic() * 2) % 2 == 0 else " "
@@ -606,17 +608,20 @@ def show_pokedex(page) -> str:
                 panel_title = Text("  POKÉDEX", style="bold yellow")
                 subtitle = None
 
-        return Panel(
+        return Align.center(Panel(
             body,
             title=panel_title,
             subtitle=subtitle,
             box=box.DOUBLE_EDGE,
             width=panel_w,
-        )
+        ))
 
     with Live(make_panel(), console=console, screen=True, refresh_per_second=4) as live:
         while True:
-            key = read_key()
+            key = poll_key(timeout=0.25)
+            if key is None:
+                live.update(make_panel())  # keep cursor blinking
+                continue
             if key == 'ESC':
                 break
             if mode == "search":
@@ -624,7 +629,7 @@ def show_pokedex(page) -> str:
                     scroll = max(0, scroll - 1)
                 elif key == 'DOWN':
                     scroll += 1
-                elif key == '\x08':  # backspace
+                elif key in ('\x08', '\x7f'):
                     query = query[:-1]
                     scroll = 0
                 elif key == '\t':
