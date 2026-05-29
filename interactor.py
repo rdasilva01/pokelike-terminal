@@ -1403,6 +1403,9 @@ class PokelikeApp(App):
 
 def main():
     PokelikeApp().run()
+    # Reset terminal colours/attributes that Textual may leave behind
+    sys.stdout.write("\033[0m\033[?25h")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
