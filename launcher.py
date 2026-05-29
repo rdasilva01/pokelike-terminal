@@ -1,29 +1,47 @@
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-CHROME_PATHS = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "Application" / "chrome.exe",
-]
+if sys.platform == "win32":
+    CHROME_PATHS = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "Application" / "chrome.exe",
+    ]
+    CHROME_USER_DATA = r"C:\ChromeDebug"
+else:
+    CHROME_PATHS = []   # resolved via PATH on Linux
+    CHROME_USER_DATA = str(Path.home() / ".chrome-debug")
 
 CHROME_ARGS = [
     "--remote-debugging-port=9222",
-    "--user-data-dir=C:\\ChromeDebug",
+    f"--user-data-dir={CHROME_USER_DATA}",
     "https://pokelike.xyz/",
 ]
 
+# Linux binary names to try (in order)
+LINUX_CHROME_NAMES = ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"]
+
 
 def find_chrome() -> str:
-    for path in CHROME_PATHS:
-        if Path(path).exists():
-            return str(path)
-    raise FileNotFoundError(
-        "Chrome not found in default locations. "
-        "Set CHROME_PATH at the top of launcher.py to your chrome.exe path."
-    )
+    if sys.platform == "win32":
+        for path in CHROME_PATHS:
+            if Path(path).exists():
+                return str(path)
+        raise FileNotFoundError(
+            "Chrome not found. Set CHROME_PATHS at the top of launcher.py."
+        )
+    else:
+        for name in LINUX_CHROME_NAMES:
+            found = shutil.which(name)
+            if found:
+                return found
+        raise FileNotFoundError(
+            f"Chrome not found. Install google-chrome or chromium-browser, "
+            f"or set LINUX_CHROME_NAMES in launcher.py."
+        )
 
 
 def main():

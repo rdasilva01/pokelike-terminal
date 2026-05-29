@@ -1,5 +1,4 @@
 import json
-import msvcrt
 import re
 import sys
 import time
@@ -15,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
+from keyboard import read_key, poll_key
 from browser import connect_to_chrome
 from screen_detector import detect, ScreenType
 from parsers.battle import BattleParser
@@ -74,26 +74,6 @@ class MenuItem:
 # ---------------------------------------------------------------------------
 # Key reading (Windows, non-blocking)
 # ---------------------------------------------------------------------------
-
-def read_key() -> str:
-    ch = msvcrt.getwch()
-    if ch in ('\x00', '\xe0'):
-        ch2 = msvcrt.getwch()
-        return {'H': 'UP', 'P': 'DOWN', 'K': 'LEFT', 'M': 'RIGHT'}.get(ch2, '')
-    if ch == '\r':
-        return 'ENTER'
-    if ch == '\x1b':
-        return 'ESC'
-    return ch.lower()
-
-
-def poll_key(timeout: float = 0.1) -> str | None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if msvcrt.kbhit():
-            return read_key()
-        time.sleep(0.02)
-    return None
 
 
 # ---------------------------------------------------------------------------
