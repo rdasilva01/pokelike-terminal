@@ -6,10 +6,14 @@ Connects to an open Chrome window via CDP, detects the current game screen, pars
 
 ## Features
 
-- Auto-detects game screens (main menu, starter select, map, and more)
+- Auto-detects game screens (main menu, map, battle, catch, items, trades, champion, and more)
 - Rich terminal UI with keyboard navigation and letter shortcuts
-- Auto-refreshes game state every 1.5 seconds
-- Auto-selects your pre-chosen starter when the starter screen appears
+- Auto-refreshes game state every 0.5 seconds
+- Auto-clicks starter select, badge screen, game over, and evolution screens
+- 3-panel MAP layout: team (with HP and move info) · actions · bag
+- Pokémon swap via drag-to from the terminal
+- Bag equip mode — pick an item from the bag and apply it to a Pokémon
+- **Pokédex overlay** — type-ahead search across all 1350 species + reverse route lookup
 - Raw JSON viewer for full parsed game state
 - Launches Chrome automatically via `launcher.py`
 
@@ -46,10 +50,37 @@ python interactor.py  # terminal UI only (Chrome must already be open on pokelik
 | Enter | Execute selected item |
 | Letter shortcuts | Execute directly (N, Z, B, R, P, J, Q…) |
 | ◀ ▶ | Pick starter (on main menu) |
+| D | Open Pokédex overlay |
 | J | View raw parsed JSON |
 | P | Reload browser page |
 | R | Re-parse current screen |
 | Q / Esc | Quit |
+
+## Pokédex overlay
+
+Press **D** from the main menu or map screen.
+
+**Search mode** — type any characters to filter all 1350 species by name. Each result shows types, normal-mode spawn locations, and battle tower tiers. Backspace to edit, ↑↓ to scroll.
+
+**Route mode** — press **Tab** to switch. Use ◀▶ to cycle through every route and tower floor in play order; ↑↓ to scroll that location's Pokémon list. Tab again to return to search.
+
+Press **ESC** to exit the overlay.
+
+## Screens implemented
+
+| Screen | Parsed data |
+|--------|-------------|
+| Main menu | Selected gen, available gens, logged-in user |
+| Starter select | Name, level, types, move for each starter |
+| Map | Stage/boss info, team HP/moves/types, bag items, badges, all map nodes with type and state |
+| Battle | Both teams with HP, active/fainted state, continue-ready detection |
+| Catch Pokémon | Choices with level, types, shiny/caught flags |
+| Item select | Item names and descriptions |
+| Item equip / Move tutor | Per-Pokémon equip or teach options |
+| Trade offer | Trade members with types and level |
+| Pokémon received | Name, level, types, move, shiny flag |
+| Champion | Win title, run count, full winning team stats |
+| Game over | Auto-clicks Try Again |
 
 ## Project structure
 
@@ -59,14 +90,6 @@ browser.py          # CDP connection to open Chrome tab
 screen_detector.py  # identifies current screen by DOM fingerprint
 parsers/            # one parser per screen → returns state dict
 models/screens.py   # TypedDicts for each screen's state
-interactor.py       # Rich TUI — render loop, menu builders, key handling
+interactor.py       # Rich TUI — render loop, menu builders, Pokédex overlay
 config.py           # CDP port, target URL
 ```
-
-## Screens implemented
-
-| Screen | Parsed data |
-|--------|-------------|
-| Main menu | Selected gen, available gens, logged-in user |
-| Starter select | Name, level, types, move for each starter |
-| Map | Stage/boss info, team HP, bag, badges, all map nodes with type and state |

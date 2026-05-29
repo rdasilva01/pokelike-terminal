@@ -420,7 +420,12 @@ def build_main_menu_items(
         page.reload()
         return "Page reloaded."
 
+    def open_dex_main():
+        show_pokedex(page)
+        return ""
+
     items += [
+        MenuItem("Pokédex",     "D", open_dex_main),
         MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
@@ -455,6 +460,212 @@ def show_raw_json(state: dict) -> str:
                 offset = min(max(0, len(lines) - term_h), offset + 1)
             else:
                 break
+            live.update(make_panel())
+    return ""
+
+
+def show_pokedex(page) -> str:
+    try:
+        data = page.evaluate("""() => {
+            const species = JSON.parse(localStorage.getItem('pkrl_species_list') || '[]')
+            const dex     = JSON.parse(localStorage.getItem('poke_dex') || '{}')
+            return species.map(s => {
+                const locs  = (typeof getPokemonLocations === 'function') ? getPokemonLocations(s.id) : {}
+                const types = (typeof getSpeciesTypes     === 'function') ? getSpeciesTypes(s.id)     : []
+                return {
+                    id:     s.id,
+                    name:   s.name,
+                    types:  types || [],
+                    caught: !!dex[s.id],
+                    routes: locs.regularMaps || [],
+                    floors: locs.towerFloors || [],
+                }
+            })
+        }""")
+    except Exception:
+        return "Failed to load Pokédex data."
+
+    ROUTE_ORDER = [
+        "Route 1", "Mt Moon", "Nugget Bridge", "Rock Tunnel",
+        "Silph Co", "Safari Zone", "Seafoam Island", "Viridian City", "Victory Road",
+    ]
+    # Tower has 3 rounds × 3 maps (R1M1–R3M3)
+    FLOOR_ORDER = ["Early", "Early-Middle", "Middle", "Middle-Late", "Late"]
+    FLOOR_CODES = {
+        "Early":        "R1M1, R1M2",
+        "Early-Middle": "R1M3, R2M1",
+        "Middle":       "R2M1, R2M2",
+        "Middle-Late":  "R2M2, R2M3, R3M1",
+        "Late":         "R3M2, R3M3",
+    }
+
+    def fmt_floors(floors: list[str]) -> str:
+        if not floors:
+            return "—"
+        return ", ".join(floors)
+
+    route_map: dict[str, list] = {}
+    for s in data:
+        for r in s["routes"]:
+            route_map.setdefault(r, []).append(s)
+        for f in s["floors"]:
+            route_map.setdefault(f"Tower: {f}", []).append(s)
+
+    def _route_sort_key(name: str) -> tuple:
+        if name.startswith("Tower: "):
+            floor = name[len("Tower: "):]
+            idx   = FLOOR_ORDER.index(floor) if floor in FLOOR_ORDER else len(FLOOR_ORDER)
+            return (1, idx)
+        idx = ROUTE_ORDER.index(name) if name in ROUTE_ORDER else len(ROUTE_ORDER)
+        return (0, idx)
+
+    all_routes = sorted(route_map.keys(), key=_route_sort_key)
+
+    mode        = "search"
+    query       = ""
+    scroll      = 0
+    route_idx   = 0
+    route_scroll = 0
+
+    def filtered():
+        q = query.lower()
+        if q:
+            return [s for s in data if s["name"].lower().startswith(q)]
+        return data
+
+    def make_panel():
+        term_w = console.size.width
+        term_h = max(5, console.size.height - 4)
+        panel_w = term_w - 2
+        # reserve 4 lines: panel borders (2) + hint row + blank separator
+        visible_rows = max(1, term_h - 6)
+
+        body = Table.grid(padding=(0, 1))
+        body.add_column()
+
+        if mode == "search":
+            cursor = "_" if int(time.monotonic() * 2) % 2 == 0 else " "
+            results = filtered()
+            total = len(results)
+            rows_per = 2
+            visible_pokes = max(1, visible_rows // rows_per)
+            max_scroll = max(0, total - visible_pokes)
+            clamped = min(scroll, max_scroll)
+            page_items = results[clamped:clamped + visible_pokes]
+
+            # hints + query at the top
+            body.add_row(Text.assemble(
+                ("  type to filter · ↑↓ scroll · Tab=route mode · ESC=exit", "dim"),
+                (f"   [{clamped+1}-{min(clamped+visible_pokes,total)}/{total}]", "dim"),
+            ))
+            body.add_row(Text.assemble(
+                ("  search: ", "dim"),
+                (query + cursor, "bold cyan"),
+            ))
+            body.add_row(Text(""))
+
+            for s in page_items:
+                check      = "✓" if s["caught"] else "·"
+                c_style    = "bold green" if s["caught"] else "dim"
+                types      = "/".join(s["types"]) if s["types"] else ""
+                routes_str = ", ".join(s["routes"]) if s["routes"] else "—"
+                floors_str = fmt_floors(s["floors"])
+                indent = "     " + " " * 20 + "  " + " " * 16
+                body.add_row(Text.assemble(
+                    (f" {check} ", c_style),
+                    (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
+                    (f"  {types:<16}", "dim"),
+                    ("  Normal: ", "dim"),
+                    (routes_str, "dim"),
+                ))
+                body.add_row(Text.assemble(
+                    (indent, ""),
+                    ("Tower:  ", "dim"),
+                    (floors_str, "dim"),
+                ))
+
+            panel_title = Text("  POKÉDEX", style="bold yellow")
+            subtitle = None
+
+        else:
+            if not all_routes:
+                body.add_row(Text("No route data available.", style="dim"))
+                panel_title = Text("  POKÉDEX", style="bold yellow")
+                subtitle = None
+            else:
+                ri = route_idx % len(all_routes)
+                route_name = all_routes[ri]
+                pokes = route_map.get(route_name, [])
+                total = len(pokes)
+                max_scroll = max(0, total - visible_rows)
+                clamped_r = min(route_scroll, max_scroll)
+                page_items = pokes[clamped_r:clamped_r + visible_rows]
+
+                # hints + route selector at the top
+                body.add_row(Text.assemble(
+                    ("  ◀▶=route · ↑↓ scroll · Tab=search mode · ESC=exit", "dim"),
+                    (f"   [{clamped_r+1}-{min(clamped_r+visible_rows,total)}/{total}]", "dim"),
+                ))
+                body.add_row(Text.assemble(
+                    ("  ◀  ", "dim"),
+                    (route_name, "bold cyan"),
+                    ("  ▶", "dim"),
+                ))
+                body.add_row(Text(""))
+
+                for s in page_items:
+                    check   = "✓" if s["caught"] else "·"
+                    c_style = "bold green" if s["caught"] else "dim"
+                    types   = "/".join(s["types"]) if s["types"] else ""
+                    body.add_row(Text.assemble(
+                        (f" {check} ", c_style),
+                        (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
+                        (f"  {types}", "dim"),
+                    ))
+
+                panel_title = Text("  POKÉDEX", style="bold yellow")
+                subtitle = None
+
+        return Panel(
+            body,
+            title=panel_title,
+            subtitle=subtitle,
+            box=box.DOUBLE_EDGE,
+            width=panel_w,
+        )
+
+    with Live(make_panel(), console=console, screen=True, refresh_per_second=4) as live:
+        while True:
+            key = read_key()
+            if key == 'ESC':
+                break
+            if mode == "search":
+                if key == 'UP':
+                    scroll = max(0, scroll - 1)
+                elif key == 'DOWN':
+                    scroll += 1
+                elif key == '\x08':  # backspace
+                    query = query[:-1]
+                    scroll = 0
+                elif key == '\t':
+                    mode = "route"
+                    route_scroll = 0
+                elif len(key) == 1 and key.isprintable():
+                    query += key
+                    scroll = 0
+            else:
+                if key == 'LEFT':
+                    route_idx = (route_idx - 1) % max(1, len(all_routes))
+                    route_scroll = 0
+                elif key == 'RIGHT':
+                    route_idx = (route_idx + 1) % max(1, len(all_routes))
+                    route_scroll = 0
+                elif key == 'UP':
+                    route_scroll = max(0, route_scroll - 1)
+                elif key == 'DOWN':
+                    route_scroll += 1
+                elif key == '\t':
+                    mode = "search"
             live.update(make_panel())
     return ""
 
@@ -615,7 +826,12 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
             return "Pick Pokémon to move"
         items.append(MenuItem("Swap Pokémon", "W", enter_swap))
 
+    def open_dex():
+        show_pokedex(page)
+        return ""
+
     items += [
+        MenuItem("Pokédex",     "D", open_dex),
         MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),

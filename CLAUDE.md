@@ -38,9 +38,25 @@ python interactor.py  # interactor only (Chrome must already be open)
 - **P** — reload the browser page (works on all screens)
 - **R** — re-parse current screen state
 - **J** — view raw parsed JSON (any key to return)
+- **D** — open Pokédex overlay (available on main menu and map screens)
 - **Q / Esc** — quit
 
-The UI auto-refreshes state every 3 seconds (`AUTO_REFRESH_INTERVAL` in `interactor.py`). Cursor position is preserved after actions; only resets when the screen type changes.
+The UI auto-refreshes state every 0.5 seconds (`AUTO_REFRESH_INTERVAL` in `interactor.py`). Cursor position is preserved after actions; only resets when the screen type changes.
+
+## Pokédex overlay (`show_pokedex`)
+
+Full-screen overlay accessible via `D` from the main menu or map screen. Loads all 1350 species in one JS round-trip using `getPokemonLocations` and `getSpeciesTypes` game globals plus `pkrl_species_list` and `poke_dex` from localStorage.
+
+**Search mode** (default): type to filter by name prefix, ↑↓ to scroll. Each entry shows types, normal-mode routes, and battle tower tiers.
+
+**Route mode** (Tab to toggle): ◀▶ to cycle through routes and tower tiers in play order, ↑↓ to scroll that location's Pokémon list.
+
+Tower floor tiers map to internal R×M× codes (3 rounds × 3 maps):
+- Early → R1M1, R1M2
+- Early-Middle → R1M3, R2M1
+- Middle → R2M1, R2M2
+- Middle-Late → R2M2, R2M3, R3M1
+- Late → R3M2, R3M3
 
 ## Architecture
 
@@ -51,9 +67,18 @@ screen_detector.py  # ScreenType enum + detect(page) — identifies screen by DO
 parsers/
   base.py           # AbstractParser — parse(page) -> dict
   main_menu.py      # MainMenuParser
+  map_screen.py     # MapParser — team, bag, badges, nodes
+  battle.py         # BattleParser
+  catch_pokemon.py  # CatchPokemonParser
+  item_select.py    # ItemSelectParser
+  item_equip.py     # ItemEquipParser
+  trade_offer.py    # TradeOfferParser
+  pokemon_received.py
+  starter_select.py
+  champion.py       # ChampionParser
 models/
   screens.py        # TypedDicts for each screen's state dict
-interactor.py       # Rich TUI — render loop, menu builders, key handling
+interactor.py       # Rich TUI — render loop, menu builders, key handling, show_pokedex
 config.py           # TARGET_URL, CDP port constants
 ```
 
