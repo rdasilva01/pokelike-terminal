@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 import time
@@ -7,14 +8,18 @@ from typing import Callable
 
 from rich.align import Align
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich import box
 
-from keyboard import read_key, poll_key
+from textual.app import App, ComposeResult
+from textual.screen import Screen
+from textual.widgets import Static
+from textual.binding import Binding
+from textual import work
+
 from browser import connect_to_chrome
 from screen_detector import detect, ScreenType
 from parsers.battle import BattleParser
@@ -72,11 +77,6 @@ class MenuItem:
 
 
 # ---------------------------------------------------------------------------
-# Key reading (Windows, non-blocking)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 
@@ -101,7 +101,10 @@ def render(
     swap_source=None,
     bag_mode=None,
 ) -> Align:
-    term_w = console.size.width
+    try:
+        term_w = console.size.width
+    except Exception:
+        term_w = os.get_terminal_size().columns
     panel_w = min(92, term_w - 4)
 
     layout = Table.grid(padding=(0, 1))
@@ -226,6 +229,7 @@ def render(
         menu_table.add_row(arrow, label, key)
 
     if screen == ScreenType.MAIN_MENU:
+        gen = state.get("selected_gen") or "I"
         starters = get_starters(gen)
         starter_widget = render_starter_inline(starters, selected_starter)
         side = Table.grid(padding=(1, 1))
@@ -401,12 +405,11 @@ def build_main_menu_items(
         return "Page reloaded."
 
     def open_dex_main():
-        show_pokedex(page)
-        return ""
+        return "SHOW_POKEDEX"
 
     items += [
         MenuItem("Pokédex",     "D", open_dex_main),
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -415,243 +418,13 @@ def build_main_menu_items(
 
 
 def show_raw_json(state: dict) -> str:
+    """Legacy blocking function — kept for reference. Not used in Textual mode."""
     lines = json.dumps(state, indent=2).splitlines()
-    offset = 0
-
-    def make_panel():
-        term_h = max(5, console.size.height - 6)
-        visible = lines[offset:offset + term_h]
-        syntax = Syntax("\n".join(visible), "json", theme="monokai", line_numbers=True, start_line=offset + 1)
-        pct = f"{offset + 1}-{min(offset + term_h, len(lines))}/{len(lines)}"
-        return Panel(
-            syntax,
-            title=f"[bold yellow]RAW JSON[/] [dim](↑↓ scroll · any other key to go back)[/]",
-            subtitle=f"[dim]{pct}[/]",
-            box=box.DOUBLE_EDGE,
-            width=console.size.width,
-        )
-
-    with Live(make_panel(), console=console, screen=True, refresh_per_second=4) as live:
-        while True:
-            key = poll_key(timeout=0.25)
-            if key is None:
-                continue
-            if key == 'UP':
-                offset = max(0, offset - 1)
-            elif key == 'DOWN':
-                term_h = max(5, console.size.height - 6)
-                offset = min(max(0, len(lines) - term_h), offset + 1)
-            else:
-                break
-            live.update(make_panel())
     return ""
 
 
 def show_pokedex(page) -> str:
-    try:
-        data = page.evaluate("""() => {
-            const species = JSON.parse(localStorage.getItem('pkrl_species_list') || '[]')
-            const dex     = JSON.parse(localStorage.getItem('poke_dex') || '{}')
-            return species.map(s => {
-                const locs  = (typeof getPokemonLocations === 'function') ? getPokemonLocations(s.id) : {}
-                const types = (typeof getSpeciesTypes     === 'function') ? getSpeciesTypes(s.id)     : []
-                return {
-                    id:     s.id,
-                    name:   s.name,
-                    types:  types || [],
-                    caught: !!dex[s.id],
-                    routes: locs.regularMaps || [],
-                    floors: locs.towerFloors || [],
-                }
-            })
-        }""")
-    except Exception:
-        return "Failed to load Pokédex data."
-
-    ROUTE_ORDER = [
-        "Route 1", "Mt Moon", "Nugget Bridge", "Rock Tunnel",
-        "Silph Co", "Safari Zone", "Seafoam Island", "Viridian City", "Victory Road",
-    ]
-    # Tower has 3 rounds × 3 maps (R1M1–R3M3)
-    FLOOR_ORDER = ["Early", "Early-Middle", "Middle", "Middle-Late", "Late"]
-    FLOOR_CODES = {
-        "Early":        "R1M1, R1M2",
-        "Early-Middle": "R1M3, R2M1",
-        "Middle":       "R2M1, R2M2",
-        "Middle-Late":  "R2M2, R2M3, R3M1",
-        "Late":         "R3M2, R3M3",
-    }
-
-    def fmt_floors(floors: list[str]) -> str:
-        if not floors:
-            return "—"
-        return ", ".join(floors)
-
-    route_map: dict[str, list] = {}
-    for s in data:
-        for r in s["routes"]:
-            route_map.setdefault(r, []).append(s)
-        for f in s["floors"]:
-            route_map.setdefault(f"Tower: {f}", []).append(s)
-
-    def _route_sort_key(name: str) -> tuple:
-        if name.startswith("Tower: "):
-            floor = name[len("Tower: "):]
-            idx   = FLOOR_ORDER.index(floor) if floor in FLOOR_ORDER else len(FLOOR_ORDER)
-            return (1, idx)
-        idx = ROUTE_ORDER.index(name) if name in ROUTE_ORDER else len(ROUTE_ORDER)
-        return (0, idx)
-
-    all_routes = sorted(route_map.keys(), key=_route_sort_key)
-
-    mode        = "search"
-    query       = ""
-    scroll      = 0
-    route_idx   = 0
-    route_scroll = 0
-
-    def filtered():
-        q = query.lower()
-        if q:
-            return [s for s in data if s["name"].lower().startswith(q)]
-        return data
-
-    def make_panel():
-        term_w = console.size.width
-        term_h = max(5, console.size.height - 4)
-        panel_w = min(160, max(60, term_w - 10))
-        # reserve 4 lines: panel borders (2) + hint row + blank separator
-        visible_rows = max(1, term_h - 6)
-        body = Table.grid(padding=(0, 1))
-        body.add_column(no_wrap=True, overflow="fold")
-
-        if mode == "search":
-            cursor = "_" if int(time.monotonic() * 2) % 2 == 0 else " "
-            results = filtered()
-            total = len(results)
-            rows_per = 2
-            visible_pokes = max(1, visible_rows // rows_per)
-            max_scroll = max(0, total - visible_pokes)
-            clamped = min(scroll, max_scroll)
-            page_items = results[clamped:clamped + visible_pokes]
-
-            # hints + query at the top
-            body.add_row(Text.assemble(
-                ("  type to filter · ↑↓ scroll · Tab=route mode · ESC=exit", "dim"),
-                (f"   [{clamped+1}-{min(clamped+visible_pokes,total)}/{total}]", "dim"),
-            ))
-            body.add_row(Text.assemble(
-                ("  search: ", "dim"),
-                (query + cursor, "bold cyan"),
-            ))
-            body.add_row(Text(""))
-
-            for s in page_items:
-                check      = "✓" if s["caught"] else "·"
-                c_style    = "bold green" if s["caught"] else "dim"
-                types      = "/".join(s["types"]) if s["types"] else ""
-                routes_str = ", ".join(s["routes"]) if s["routes"] else "—"
-                floors_str = fmt_floors(s["floors"])
-                indent = "     " + " " * 20 + "  " + " " * 16
-                body.add_row(Text.assemble(
-                    (f" {check} ", c_style),
-                    (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
-                    (f"  {types:<16}", "dim"),
-                    ("  Normal: ", "dim"),
-                    (routes_str, "dim"),
-                ))
-                body.add_row(Text.assemble(
-                    (indent, ""),
-                    ("Tower:  ", "dim"),
-                    (floors_str, "dim"),
-                ))
-
-            panel_title = Text("  POKÉDEX", style="bold yellow")
-            subtitle = None
-
-        else:
-            if not all_routes:
-                body.add_row(Text("No route data available.", style="dim"))
-                panel_title = Text("  POKÉDEX", style="bold yellow")
-                subtitle = None
-            else:
-                ri = route_idx % len(all_routes)
-                route_name = all_routes[ri]
-                pokes = route_map.get(route_name, [])
-                total = len(pokes)
-                max_scroll = max(0, total - visible_rows)
-                clamped_r = min(route_scroll, max_scroll)
-                page_items = pokes[clamped_r:clamped_r + visible_rows]
-
-                # hints + route selector at the top
-                body.add_row(Text.assemble(
-                    ("  ◀▶=route · ↑↓ scroll · Tab=search mode · ESC=exit", "dim"),
-                    (f"   [{clamped_r+1}-{min(clamped_r+visible_rows,total)}/{total}]", "dim"),
-                ))
-                body.add_row(Text.assemble(
-                    ("  ◀  ", "dim"),
-                    (route_name, "bold cyan"),
-                    ("  ▶", "dim"),
-                ))
-                body.add_row(Text(""))
-
-                for s in page_items:
-                    check   = "✓" if s["caught"] else "·"
-                    c_style = "bold green" if s["caught"] else "dim"
-                    types   = "/".join(s["types"]) if s["types"] else ""
-                    body.add_row(Text.assemble(
-                        (f" {check} ", c_style),
-                        (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
-                        (f"  {types}", "dim"),
-                    ))
-
-                panel_title = Text("  POKÉDEX", style="bold yellow")
-                subtitle = None
-
-        return Align.center(Panel(
-            body,
-            title=panel_title,
-            subtitle=subtitle,
-            box=box.DOUBLE_EDGE,
-            width=panel_w,
-        ))
-
-    with Live(make_panel(), console=console, screen=True, refresh_per_second=4) as live:
-        while True:
-            key = poll_key(timeout=0.25)
-            if key is None:
-                live.update(make_panel())  # keep cursor blinking
-                continue
-            if key == 'ESC':
-                break
-            if mode == "search":
-                if key == 'UP':
-                    scroll = max(0, scroll - 1)
-                elif key == 'DOWN':
-                    scroll += 1
-                elif key in ('\x08', '\x7f'):
-                    query = query[:-1]
-                    scroll = 0
-                elif key == '\t':
-                    mode = "route"
-                    route_scroll = 0
-                elif len(key) == 1 and key.isprintable():
-                    query += key
-                    scroll = 0
-            else:
-                if key == 'LEFT':
-                    route_idx = (route_idx - 1) % max(1, len(all_routes))
-                    route_scroll = 0
-                elif key == 'RIGHT':
-                    route_idx = (route_idx + 1) % max(1, len(all_routes))
-                    route_scroll = 0
-                elif key == 'UP':
-                    route_scroll = max(0, route_scroll - 1)
-                elif key == 'DOWN':
-                    route_scroll += 1
-                elif key == '\t':
-                    mode = "search"
-            live.update(make_panel())
+    """Legacy blocking function — kept for reference. Not used in Textual mode."""
     return ""
 
 
@@ -675,7 +448,7 @@ def build_starter_select_items(state: dict, page, refresh_fn: Callable, selected
         return "Page reloaded."
 
     items += [
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -812,12 +585,11 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         items.append(MenuItem("Swap Pokémon", "W", enter_swap))
 
     def open_dex():
-        show_pokedex(page)
-        return ""
+        return "SHOW_POKEDEX"
 
     items += [
         MenuItem("Pokédex",     "D", open_dex),
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -857,7 +629,7 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
         return "Page reloaded."
 
     items += [
-        MenuItem("Raw JSON", "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON", "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",    "R", refresh_fn),
         MenuItem("Quit",       "Q", lambda: "QUIT"),
@@ -880,7 +652,7 @@ def build_pokemon_received_items(state: dict, page, refresh_fn: Callable, select
 
     return [
         MenuItem("Continue",    "C", do_continue),
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -917,7 +689,7 @@ def build_trade_offer_items(state: dict, page, refresh_fn: Callable, selected_st
 
     items.append(MenuItem("Decline", "D", decline))
     items += [
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -945,7 +717,7 @@ def build_battle_items(state: dict, page, refresh_fn: Callable, selected_starter
         items.append(MenuItem("Continue", "C", do_continue))
 
     items += [
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -1012,7 +784,7 @@ def build_item_equip_items(state: dict, page, refresh_fn: Callable, selected_sta
         return "Page reloaded."
 
     items += [
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -1049,7 +821,7 @@ def build_item_select_items(state: dict, page, refresh_fn: Callable, selected_st
         return "Page reloaded."
 
     items += [
-        MenuItem("Raw JSON",    "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -1076,7 +848,7 @@ def build_champion_items(state: dict, page, refresh_fn: Callable, selected_start
         MenuItem("Play Again",       "P", click_btn("Play Again")),
         MenuItem("Climb the Tower",  "T", click_btn("🗼 Climb the Tower")),
         MenuItem("Hall of Fame",     "H", click_btn("🏛️ Hall of Fame")),
-        MenuItem("Raw JSON",         "J", lambda: show_raw_json(state)),
+        MenuItem("Raw JSON",         "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page",      "R", reload_page),
         MenuItem("Quit",             "Q", lambda: "QUIT"),
     ]
@@ -1097,137 +869,8 @@ MENU_BUILDERS = {
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Helpers shared with old run_tui
 # ---------------------------------------------------------------------------
-
-def main():
-    console.print("[dim]Connecting to Chrome...[/]")
-    try:
-        with connect_to_chrome() as page:
-            console.print(f"[green]Connected[/] {page.url}\n")
-            run_tui(page)
-    except RuntimeError as e:
-        console.print(f"[red][Error][/] {e}")
-        sys.exit(1)
-
-
-def run_tui(page):
-    screen = ScreenType.UNKNOWN
-    state: dict = {}
-    selected = 0
-    selected_starter = 0
-    swap_source = [None]   # [None] | ["src"] | [int index]
-    bag_mode   = [False]   # [False] | [True]
-    refresh_flash_until = 0.0
-    last_auto_refresh = 0.0  # triggers immediate refresh on first iteration
-
-    def handle_screen_change(prev: ScreenType, new: ScreenType) -> str:
-        """Fire auto-actions on screen transitions. Returns a status message."""
-        if new == ScreenType.STARTER_SELECT:
-            return click_starter(page, selected_starter)
-        if new == ScreenType.BADGE_OBTAINED:
-            page.evaluate("""() => {
-                const btn = Array.from(document.querySelectorAll('.btn-primary'))
-                    .find(b => b.textContent.includes('Next Map'))
-                if (btn) btn.click()
-            }""")
-            return "Badge obtained — clicked Next Map"
-        if new == ScreenType.GAME_OVER:
-            page.evaluate("""() => {
-                const btn = Array.from(document.querySelectorAll('.btn-primary'))
-                    .find(b => b.textContent.trim() === 'Try Again')
-                if (btn) btn.click()
-            }""")
-            return "Game over — clicked Try Again"
-        if new == ScreenType.EVOLUTION:
-            _click_center(page)
-            return "Evolution — clicked to advance"
-        return ""
-
-    def apply_change(prev_screen: ScreenType) -> None:
-        """Detect new screen, fire auto-actions if changed, re-detect after auto-action."""
-        nonlocal screen, state, selected, last_auto_refresh, refresh_flash_until
-        try:
-            screen = detect(page)
-            p = PARSER_MAP.get(screen)
-            state = p.parse(page) if p else _unknown_state(page, screen)
-        except Exception:
-            last_auto_refresh = time.monotonic()
-            return
-        last_auto_refresh = time.monotonic()
-        refresh_flash_until = time.monotonic() + 1.2
-        if screen != prev_screen:
-            selected = 0
-            auto_msg = handle_screen_change(prev_screen, screen)
-            if auto_msg:
-                time.sleep(0.8)
-                try:
-                    screen = detect(page)
-                    p = PARSER_MAP.get(screen)
-                    state = p.parse(page) if p else _unknown_state(page, screen)
-                except Exception:
-                    pass
-
-    def do_refresh():
-        prev = screen
-        apply_change(prev)
-
-    with Live(console=console, screen=True, refresh_per_second=10) as live:
-        while True:
-            if screen == ScreenType.MAP:
-                items = build_map_items(state, page, do_refresh, selected_starter, swap_source, bag_mode)
-            else:
-                swap_source[0] = None   # reset modes when leaving MAP
-                bag_mode[0]    = False
-                builder = MENU_BUILDERS.get(screen)
-                items = (
-                    builder(state, page, do_refresh, selected_starter)
-                    if builder else
-                    _fallback_items(do_refresh, page)
-                )
-            selected = max(0, min(selected, len(items) - 1))
-
-            flash = time.monotonic() < refresh_flash_until
-            live.update(render(screen, state, items, selected, flash, selected_starter, swap_source, bag_mode))
-
-            key = poll_key(timeout=0.5)
-
-            if key is None:
-                if time.monotonic() - last_auto_refresh >= AUTO_REFRESH_INTERVAL:
-                    do_refresh()
-                    if screen == ScreenType.EVOLUTION:
-                        _click_center(page)
-                continue
-
-            if key == 'UP':
-                selected = (selected - 1) % len(items)
-            elif key == 'DOWN':
-                selected = (selected + 1) % len(items)
-            elif key == 'LEFT':
-                gen = state.get("selected_gen") or "I"
-                n = len(get_starters(gen))
-                selected_starter = (selected_starter - 1) % n
-            elif key == 'RIGHT':
-                gen = state.get("selected_gen") or "I"
-                n = len(get_starters(gen))
-                selected_starter = (selected_starter + 1) % n
-            elif key == 'ENTER':
-                result = _execute(items, selected)
-                if result == "QUIT":
-                    break
-                apply_change(screen)
-            elif key in ('ESC', 'q'):
-                break
-            else:
-                for i, item in enumerate(items):
-                    if item.shortcut.lower() == key and item.enabled:
-                        result = _execute(items, i)
-                        if result == "QUIT":
-                            live.stop()
-                            return
-                        apply_change(screen)
-                        break
-
 
 def _execute(items: list[MenuItem], index: int) -> str:
     item = items[index]
@@ -1254,6 +897,459 @@ def _fallback_items(refresh_fn: Callable, page=None) -> list[MenuItem]:
 
 def _unknown_state(page, screen: ScreenType) -> dict:
     return {"screen": "unknown", "title": page.title(), "url": page.url}
+
+
+# ---------------------------------------------------------------------------
+# Textual screens
+# ---------------------------------------------------------------------------
+
+class JsonScreen(Screen):
+    """Full-screen JSON viewer with scroll support."""
+
+    def __init__(self, json_text: str) -> None:
+        super().__init__()
+        self.json_text = json_text
+        self.lines = json_text.splitlines()
+        self.offset = 0
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="json_display")
+
+    def on_mount(self) -> None:
+        self._update_display()
+
+    def _make_renderable(self):
+        try:
+            term_h = max(5, self.app.size.height - 6)
+        except Exception:
+            term_h = max(5, os.get_terminal_size().lines - 6)
+        visible = self.lines[self.offset:self.offset + term_h]
+        syntax = Syntax(
+            "\n".join(visible), "json",
+            theme="monokai", line_numbers=True, start_line=self.offset + 1
+        )
+        pct = f"{self.offset + 1}-{min(self.offset + term_h, len(self.lines))}/{len(self.lines)}"
+        return Panel(
+            syntax,
+            title="[bold yellow]RAW JSON[/] [dim](↑↓ scroll · any other key to go back)[/]",
+            subtitle=f"[dim]{pct}[/]",
+            box=box.DOUBLE_EDGE,
+        )
+
+    def _update_display(self) -> None:
+        self.query_one("#json_display", Static).update(self._make_renderable())
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key == "up":
+            self.offset = max(0, self.offset - 1)
+            self._update_display()
+        elif key == "down":
+            try:
+                term_h = max(5, self.app.size.height - 6)
+            except Exception:
+                term_h = max(5, os.get_terminal_size().lines - 6)
+            self.offset = min(max(0, len(self.lines) - term_h), self.offset + 1)
+            self._update_display()
+        else:
+            self.app.pop_screen()
+
+
+class PokedexScreen(Screen):
+    """Full-screen Pokédex overlay."""
+
+    ROUTE_ORDER = [
+        "Route 1", "Mt Moon", "Nugget Bridge", "Rock Tunnel",
+        "Silph Co", "Safari Zone", "Seafoam Island", "Viridian City", "Victory Road",
+    ]
+    FLOOR_ORDER = ["Early", "Early-Middle", "Middle", "Middle-Late", "Late"]
+    FLOOR_CODES = {
+        "Early":        "R1M1, R1M2",
+        "Early-Middle": "R1M3, R2M1",
+        "Middle":       "R2M1, R2M2",
+        "Middle-Late":  "R2M2, R2M3, R3M1",
+        "Late":         "R3M2, R3M3",
+    }
+
+    def __init__(self, page) -> None:
+        super().__init__()
+        self.page = page
+        self.mode = "search"
+        self.query = ""
+        self.scroll = 0
+        self.route_idx = 0
+        self.route_scroll = 0
+        self.data: list = []
+        self.route_map: dict = {}
+        self.all_routes: list = []
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="dex_display")
+
+    def on_mount(self) -> None:
+        self._load_data()
+        self.set_interval(0.5, self._blink)
+
+    @work(thread=True)
+    def _load_data(self) -> None:
+        try:
+            data = self.page.evaluate("""() => {
+                const species = JSON.parse(localStorage.getItem('pkrl_species_list') || '[]')
+                const dex     = JSON.parse(localStorage.getItem('poke_dex') || '{}')
+                return species.map(s => {
+                    const locs  = (typeof getPokemonLocations === 'function') ? getPokemonLocations(s.id) : {}
+                    const types = (typeof getSpeciesTypes     === 'function') ? getSpeciesTypes(s.id)     : []
+                    return {
+                        id:     s.id,
+                        name:   s.name,
+                        types:  types || [],
+                        caught: !!dex[s.id],
+                        routes: locs.regularMaps || [],
+                        floors: locs.towerFloors || [],
+                    }
+                })
+            }""")
+        except Exception:
+            data = []
+
+        route_map: dict = {}
+        for s in data:
+            for r in s["routes"]:
+                route_map.setdefault(r, []).append(s)
+            for f in s["floors"]:
+                route_map.setdefault(f"Tower: {f}", []).append(s)
+
+        def _route_sort_key(name: str) -> tuple:
+            if name.startswith("Tower: "):
+                floor = name[len("Tower: "):]
+                idx = self.FLOOR_ORDER.index(floor) if floor in self.FLOOR_ORDER else len(self.FLOOR_ORDER)
+                return (1, idx)
+            idx = self.ROUTE_ORDER.index(name) if name in self.ROUTE_ORDER else len(self.ROUTE_ORDER)
+            return (0, idx)
+
+        all_routes = sorted(route_map.keys(), key=_route_sort_key)
+        self.call_from_thread(self._apply_data, data, route_map, all_routes)
+
+    def _apply_data(self, data, route_map, all_routes) -> None:
+        self.data = data
+        self.route_map = route_map
+        self.all_routes = all_routes
+        self._update_display()
+
+    def _blink(self) -> None:
+        self.query_one("#dex_display", Static).update(self._make_panel())
+
+    def _filtered(self) -> list:
+        q = self.query.lower()
+        if q:
+            return [s for s in self.data if s["name"].lower().startswith(q)]
+        return self.data
+
+    @staticmethod
+    def _fmt_floors(floors: list) -> str:
+        if not floors:
+            return "—"
+        return ", ".join(floors)
+
+    def _make_panel(self):
+        try:
+            term_w = self.app.size.width
+            term_h = self.app.size.height
+        except Exception:
+            sz = os.get_terminal_size()
+            term_w = sz.columns
+            term_h = sz.lines
+        panel_w = min(160, max(60, term_w - 10))
+        term_h = max(5, term_h - 4)
+        visible_rows = max(1, term_h - 6)
+
+        body = Table.grid(padding=(0, 1))
+        body.add_column(no_wrap=True, overflow="fold")
+
+        if self.mode == "search":
+            cursor = "_" if int(time.monotonic() * 2) % 2 == 0 else " "
+            results = self._filtered()
+            total = len(results)
+            rows_per = 2
+            visible_pokes = max(1, visible_rows // rows_per)
+            max_scroll = max(0, total - visible_pokes)
+            clamped = min(self.scroll, max_scroll)
+            page_items = results[clamped:clamped + visible_pokes]
+
+            body.add_row(Text.assemble(
+                ("  type to filter · ↑↓ scroll · Tab=route mode · ESC=exit", "dim"),
+                (f"   [{clamped+1}-{min(clamped+visible_pokes,total)}/{total}]", "dim"),
+            ))
+            body.add_row(Text.assemble(
+                ("  search: ", "dim"),
+                (self.query + cursor, "bold cyan"),
+            ))
+            body.add_row(Text(""))
+
+            for s in page_items:
+                check      = "✓" if s["caught"] else "·"
+                c_style    = "bold green" if s["caught"] else "dim"
+                types      = "/".join(s["types"]) if s["types"] else ""
+                routes_str = ", ".join(s["routes"]) if s["routes"] else "—"
+                floors_str = self._fmt_floors(s["floors"])
+                indent = "     " + " " * 20 + "  " + " " * 16
+                body.add_row(Text.assemble(
+                    (f" {check} ", c_style),
+                    (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
+                    (f"  {types:<16}", "dim"),
+                    ("  Normal: ", "dim"),
+                    (routes_str, "dim"),
+                ))
+                body.add_row(Text.assemble(
+                    (indent, ""),
+                    ("Tower:  ", "dim"),
+                    (floors_str, "dim"),
+                ))
+
+            panel_title = Text("  POKÉDEX", style="bold yellow")
+
+        else:
+            panel_title = Text("  POKÉDEX", style="bold yellow")
+            if not self.all_routes:
+                body.add_row(Text("No route data available.", style="dim"))
+            else:
+                ri = self.route_idx % len(self.all_routes)
+                route_name = self.all_routes[ri]
+                pokes = self.route_map.get(route_name, [])
+                total = len(pokes)
+                max_scroll = max(0, total - visible_rows)
+                clamped_r = min(self.route_scroll, max_scroll)
+                page_items = pokes[clamped_r:clamped_r + visible_rows]
+
+                body.add_row(Text.assemble(
+                    ("  ◀▶=route · ↑↓ scroll · Tab=search mode · ESC=exit", "dim"),
+                    (f"   [{clamped_r+1}-{min(clamped_r+visible_rows,total)}/{total}]", "dim"),
+                ))
+                body.add_row(Text.assemble(
+                    ("  ◀  ", "dim"),
+                    (route_name, "bold cyan"),
+                    ("  ▶", "dim"),
+                ))
+                body.add_row(Text(""))
+
+                for s in page_items:
+                    check   = "✓" if s["caught"] else "·"
+                    c_style = "bold green" if s["caught"] else "dim"
+                    types   = "/".join(s["types"]) if s["types"] else ""
+                    body.add_row(Text.assemble(
+                        (f" {check} ", c_style),
+                        (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
+                        (f"  {types}", "dim"),
+                    ))
+
+        return Align.center(Panel(
+            body,
+            title=panel_title,
+            box=box.DOUBLE_EDGE,
+            width=panel_w,
+        ))
+
+    def _update_display(self) -> None:
+        self.query_one("#dex_display", Static).update(self._make_panel())
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key == "escape":
+            self.app.pop_screen()
+            return
+
+        if self.mode == "search":
+            if key == "up":
+                self.scroll = max(0, self.scroll - 1)
+            elif key == "down":
+                self.scroll += 1
+            elif key == "backspace":
+                self.query = self.query[:-1]
+                self.scroll = 0
+            elif key == "tab":
+                self.mode = "route"
+                self.route_scroll = 0
+            elif len(key) == 1 and key.isprintable():
+                self.query += key
+                self.scroll = 0
+        else:
+            if key == "left":
+                self.route_idx = (self.route_idx - 1) % max(1, len(self.all_routes))
+                self.route_scroll = 0
+            elif key == "right":
+                self.route_idx = (self.route_idx + 1) % max(1, len(self.all_routes))
+                self.route_scroll = 0
+            elif key == "up":
+                self.route_scroll = max(0, self.route_scroll - 1)
+            elif key == "down":
+                self.route_scroll += 1
+            elif key == "tab":
+                self.mode = "search"
+
+        self._update_display()
+
+
+# ---------------------------------------------------------------------------
+# Main Textual app
+# ---------------------------------------------------------------------------
+
+class PokelikeApp(App):
+
+    def __init__(self, page) -> None:
+        super().__init__()
+        self.page = page
+        self.game_screen = ScreenType.UNKNOWN
+        self.state: dict = {}
+        self.selected = 0
+        self.selected_starter = 0
+        self.swap_source = [None]
+        self.bag_mode = [False]
+        self.flash_until = 0.0
+        self._items: list[MenuItem] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="display")
+
+    def on_mount(self) -> None:
+        self._do_refresh()
+        self.set_interval(AUTO_REFRESH_INTERVAL, self._do_refresh)
+
+    @work(thread=True)
+    def _do_refresh(self) -> None:
+        try:
+            prev = self.game_screen
+            new_screen = detect(self.page)
+            p = PARSER_MAP.get(new_screen)
+            new_state = p.parse(self.page) if p else _unknown_state(self.page, new_screen)
+            self.call_from_thread(self._apply_state, prev, new_screen, new_state)
+        except Exception:
+            pass
+
+    def _apply_state(self, prev: ScreenType, new_screen: ScreenType, new_state: dict) -> None:
+        screen_changed = (new_screen != prev)
+        self.game_screen = new_screen
+        self.state = new_state
+        self.flash_until = time.monotonic() + 1.2
+        if screen_changed:
+            self.selected = 0
+            self._handle_screen_change(prev, new_screen)
+        self._rebuild()
+
+    def _handle_screen_change(self, prev: ScreenType, new: ScreenType) -> None:
+        if new == ScreenType.STARTER_SELECT:
+            click_starter(self.page, self.selected_starter)
+            self.call_later(self._do_refresh)
+        elif new == ScreenType.BADGE_OBTAINED:
+            self.page.evaluate("""() => {
+                const btn = Array.from(document.querySelectorAll('.btn-primary'))
+                    .find(b => b.textContent.includes('Next Map'))
+                if (btn) btn.click()
+            }""")
+            self.call_later(self._do_refresh)
+        elif new == ScreenType.GAME_OVER:
+            self.page.evaluate("""() => {
+                const btn = Array.from(document.querySelectorAll('.btn-primary'))
+                    .find(b => b.textContent.trim() === 'Try Again')
+                if (btn) btn.click()
+            }""")
+            self.call_later(self._do_refresh)
+        elif new == ScreenType.EVOLUTION:
+            _click_center(self.page)
+            self.call_later(self._do_refresh)
+
+    def _rebuild(self) -> None:
+        self._items = self._build_current_items()
+        if self._items:
+            self.selected = max(0, min(self.selected, len(self._items) - 1))
+        flash = time.monotonic() < self.flash_until
+        renderable = render(
+            self.game_screen, self.state, self._items, self.selected,
+            flash, self.selected_starter, self.swap_source, self.bag_mode
+        )
+        self.query_one("#display", Static).update(renderable)
+
+    def _build_current_items(self) -> list[MenuItem]:
+        def noop_refresh():
+            self._do_refresh()
+            return ""
+
+        if self.game_screen == ScreenType.MAP:
+            return build_map_items(
+                self.state, self.page, noop_refresh, self.selected_starter,
+                self.swap_source, self.bag_mode
+            )
+        else:
+            self.swap_source[0] = None
+            self.bag_mode[0] = False
+            builder = MENU_BUILDERS.get(self.game_screen)
+            if builder:
+                return builder(self.state, self.page, noop_refresh, self.selected_starter)
+            return _fallback_items(noop_refresh, self.page)
+
+    def on_key(self, event) -> None:
+        key = event.key
+        items = self._items
+        if not items:
+            return
+
+        if key == "up":
+            self.selected = (self.selected - 1) % len(items)
+            self._rebuild()
+        elif key == "down":
+            self.selected = (self.selected + 1) % len(items)
+            self._rebuild()
+        elif key == "left":
+            gen = self.state.get("selected_gen") or "I"
+            n = len(get_starters(gen))
+            self.selected_starter = (self.selected_starter - 1) % n
+            self._rebuild()
+        elif key == "right":
+            gen = self.state.get("selected_gen") or "I"
+            n = len(get_starters(gen))
+            self.selected_starter = (self.selected_starter + 1) % n
+            self._rebuild()
+        elif key == "enter":
+            self._execute_item(self.selected)
+        elif key in ("escape", "q"):
+            self.exit()
+        else:
+            # single-char shortcut matching
+            char = key.lower() if len(key) == 1 else None
+            if char:
+                for i, item in enumerate(items):
+                    if item.shortcut.lower() == char and item.enabled:
+                        self._execute_item(i)
+                        break
+
+    @work(thread=True)
+    def _execute_item(self, index: int) -> None:
+        result = _execute(self._items, index)
+        if result == "QUIT":
+            self.call_from_thread(self.exit)
+        elif result == "SHOW_POKEDEX":
+            self.call_from_thread(self.push_screen, PokedexScreen(self.page))
+        elif result == "SHOW_JSON":
+            self.call_from_thread(self.push_screen, JsonScreen(json.dumps(self.state, indent=2)))
+        else:
+            self.call_from_thread(self._do_refresh_sync)
+
+    def _do_refresh_sync(self) -> None:
+        self._do_refresh()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    print("Connecting to Chrome...")
+    try:
+        with connect_to_chrome() as page:
+            print(f"Connected: {page.url}\n")
+            PokelikeApp(page).run()
+    except RuntimeError as e:
+        print(f"[Error] {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
