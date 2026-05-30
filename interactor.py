@@ -34,6 +34,7 @@ from parsers.item_select import ItemSelectParser
 from parsers.main_menu import MainMenuParser
 from parsers.map_screen import MapParser
 from parsers.starter_select import StarterSelectParser
+from parsers.team_full import TeamFullParser
 
 PARSER_MAP = {
     ScreenType.MAIN_MENU:        MainMenuParser(),
@@ -46,6 +47,7 @@ PARSER_MAP = {
     ScreenType.ITEM_SELECT:      ItemSelectParser(),
     ScreenType.ITEM_EQUIP:       ItemEquipParser(),
     ScreenType.CHAMPION:         ChampionParser(),
+    ScreenType.TEAM_FULL:        TeamFullParser(),
 }
 
 ROMAN = {"I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6"}
@@ -129,6 +131,10 @@ class StatusBar(Static):
                 f"{m['name']} {m['level']}" for m in state.get("members", [])
             ]
             return f"[#e8e8ff]{'  |  '.join(parts)}[/]"
+        if screen == ScreenType.TEAM_FULL:
+            incoming = state.get("incoming", [])
+            names    = "  ·  ".join(p["name"] for p in incoming)
+            return f"[#e8e8ff]Team Full[/]  [dim]{names}[/]"
         if screen == ScreenType.BATTLE:
             cont  = "  [bold #00e676]CONTINUE READY[/]" if state.get("can_continue") else ""
             return f"[#e8e8ff]{state.get('header', 'Battle')}[/]{cont}"
@@ -853,6 +859,50 @@ def build_champion_items(state: dict, page, refresh_fn: Callable, selected_start
     ]
 
 
+def build_team_full_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
+    incoming = state.get("incoming", [])
+    team     = state.get("team", [])
+    shortcuts = "123456"
+
+    def release(idx):
+        def _action():
+            page.evaluate("""(i) => {
+                const screen = document.querySelector('.screen.active')
+                const cards = Array.from(screen.querySelectorAll('.poke-card'))
+                    .filter(c => !c.closest('.poke-choice-wrap'))
+                if (cards[i]) cards[i].click()
+            }""", idx)
+            return f"Released {team[idx]['name']}"
+        return _action
+
+    def keep():
+        page.evaluate("""() => {
+            const btn = Array.from(document.querySelectorAll('button,.btn-secondary'))
+                .find(b => b.textContent.includes('Keep') && b.getBoundingClientRect().width > 0)
+            if (btn) btn.click()
+        }""")
+        return "Kept team as-is."
+
+    def reload_page():
+        page.reload()
+        return "Page reloaded."
+
+    items = []
+    for i, p in enumerate(team):
+        lvl   = p.get("level", "")
+        types = "  ".join(p.get("types", []))
+        label = f"Release {p['name']}  {lvl}  {types}".strip()
+        items.append(MenuItem(label, shortcuts[i] if i < len(shortcuts) else "?", release(i)))
+
+    items += [
+        MenuItem("Keep team as-is", "K", keep),
+        MenuItem("Raw JSON",        "J", lambda: "SHOW_JSON"),
+        MenuItem("Reload Page",     "P", reload_page),
+        MenuItem("Quit",            "Q", lambda: "QUIT"),
+    ]
+    return items
+
+
 MENU_BUILDERS = {
     ScreenType.MAIN_MENU:        build_main_menu_items,
     ScreenType.STARTER_SELECT:   build_starter_select_items,
@@ -864,6 +914,7 @@ MENU_BUILDERS = {
     ScreenType.ITEM_SELECT:      build_item_select_items,
     ScreenType.ITEM_EQUIP:       build_item_equip_items,
     ScreenType.CHAMPION:         build_champion_items,
+    ScreenType.TEAM_FULL:        build_team_full_items,
 }
 
 
@@ -894,7 +945,22 @@ def _fallback_items(refresh_fn: Callable, page=None) -> list[MenuItem]:
 
 
 def _unknown_state(page, screen: ScreenType) -> dict:
-    return {"screen": "unknown", "title": page.title(), "url": page.url}
+    try:
+        dom_info = page.evaluate("""() => {
+            const vis = el => el && el.getBoundingClientRect().width > 0
+            const allClasses = new Set()
+            document.querySelectorAll('*').forEach(el => {
+                el.classList.forEach(c => allClasses.add(c))
+            })
+            const visibleText = Array.from(document.querySelectorAll('h1,h2,h3,.title,.header,[class*="title"],[class*="header"]'))
+                .filter(vis).map(el => el.textContent.trim()).filter(Boolean).slice(0, 10)
+            const visibleBtns = Array.from(document.querySelectorAll('button,.btn-primary'))
+                .filter(vis).map(el => el.textContent.trim()).filter(Boolean).slice(0, 10)
+            return { classes: [...allClasses].sort(), headings: visibleText, buttons: visibleBtns }
+        }""")
+    except Exception:
+        dom_info = {}
+    return {"screen": "unknown", "title": page.title(), "url": page.url, "dom": dom_info}
 
 
 def _dom_hash(page, screen: ScreenType) -> str:
@@ -1378,6 +1444,148 @@ class ItemSelectPanel(Widget):
             strip.mount(*[
                 ActionItem(item, (offset + i) == selected)
                 for i, item in enumerate(strip_items)
+            ])
+
+
+# ---------------------------------------------------------------------------
+# Team full screen widgets
+# ---------------------------------------------------------------------------
+
+class TeamMemberCard(Widget):
+    """One team member slot in the team-full release screen."""
+
+    DEFAULT_CSS = """
+    TeamMemberCard {
+        width: 1fr;
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 1;
+        layout: vertical;
+    }
+    TeamMemberCard.selected { border: round #ff4455; background: #1a0a0a; }
+    .tmc-header { layout: horizontal; height: 1; }
+    .tmc-key    { width: 4; color: #f5c518; text-style: bold; content-align: center middle; }
+    .tmc-name   { width: 1fr; color: #e8e8ff; text-style: bold; content-align: left middle; }
+    .tmc-level  { width: 8; color: #555577; content-align: right middle; }
+    .tmc-types  { layout: horizontal; height: 1; }
+    .tmc-type   { width: auto; height: 1; padding: 0 1; margin-right: 1; text-style: bold; }
+    """
+
+    def __init__(self, p: dict, shortcut: str, is_selected: bool) -> None:
+        super().__init__()
+        self._p        = p
+        self._shortcut = shortcut
+        if is_selected:
+            self.add_class("selected")
+
+    def compose(self) -> ComposeResult:
+        p = self._p
+        with Horizontal(classes="tmc-header"):
+            yield Label(f"[{self._shortcut}]",       classes="tmc-key")
+            yield Label(p.get("name", "?"),           classes="tmc-name")
+            yield Label(p.get("level", ""),           classes="tmc-level")
+        types = p.get("types", [])
+        if types:
+            with Horizontal(classes="tmc-types"):
+                for t in types:
+                    yield Label(t, classes=f"tmc-type type-{t.lower()}")
+
+    def set_selected(self, value: bool) -> None:
+        self.set_class(value, "selected")
+
+
+class TeamFullPanel(Widget):
+    """Team-full layout: incoming pokemon row + 2×3 team grid + action strip."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    TeamFullPanel {
+        layout: vertical;
+        height: 1fr;
+        padding: 0 1 1 1;
+    }
+    #tf-incoming {
+        layout: horizontal;
+        height: auto;
+        padding: 0 0 1 0;
+    }
+    #tf-incoming-label {
+        width: 1fr;
+        height: 3;
+        color: #555577;
+        content-align: center middle;
+        text-style: bold;
+        border-bottom: solid #1e1e3a;
+    }
+    #tf-grid {
+        layout: vertical;
+        height: 1fr;
+    }
+    .tf-row { layout: horizontal; height: 1fr; margin-bottom: 1; }
+    .tf-row:last-of-type { margin-bottom: 0; }
+    .tf-gap { width: 1; }
+    #tf-strip {
+        height: 5;
+        layout: horizontal;
+        padding: 0 1;
+        border-top: solid #1e1e3a;
+        align: left middle;
+    }
+    #tf-strip ActionItem {
+        width: auto;
+        min-width: 14;
+        margin-right: 1;
+    }
+    #tf-strip ActionItem > .item-label { width: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("", id="tf-incoming-label")
+        with Vertical(id="tf-grid"):
+            yield Horizontal(classes="tf-row")
+            yield Horizontal(classes="tf-row")
+        yield Horizontal(id="tf-strip")
+
+    def rebuild(self, incoming: list, team: list, items: list, selected: int) -> None:
+        # Incoming label
+        names = "  ·  ".join(
+            f"{p['name']} {p.get('level','')}" + (" ★" if p.get("is_shiny") else "")
+            for p in incoming
+        )
+        self.query_one("#tf-incoming-label", Label).update(
+            f"[dim]Incoming:[/]  [bold #e8e8ff]{names}[/]"
+        )
+
+        # Team grid: row 0 → slots 0-2, row 1 → slots 3-5
+        shortcuts = "123456"
+        for ri, row in enumerate(self.query(".tf-row")):
+            row.query(TeamMemberCard).remove()
+            row.query(Label).remove()
+            children: list = []
+            for ci in range(3):
+                slot = ri * 3 + ci
+                if slot < len(team):
+                    is_sel = slot == selected
+                    children.append(TeamMemberCard(team[slot], shortcuts[slot], is_sel))
+                if ci < 2:
+                    children.append(Label(" ", classes="tf-gap"))
+            if children:
+                row.mount(*children)
+
+        # Action strip
+        strip    = self.query_one("#tf-strip")
+        existing = list(strip.query(ActionItem))
+        offset   = len(team)
+        if len(existing) == len(items):
+            for i, w in enumerate(existing):
+                w.refresh_state(items[i], (offset + i) == selected)
+        else:
+            strip.query(ActionItem).remove()
+            strip.mount(*[
+                ActionItem(item, (offset + i) == selected)
+                for i, item in enumerate(items)
             ])
 
 
@@ -2267,7 +2475,7 @@ class PokelikeApp(App):
     TITLE = "POKELIKE  automation"
 
     BINDINGS = [
-        Binding("q,escape", "quit_app", "Quit", show=True),
+        Binding("q", "quit_app", "Quit", show=True),
     ]
 
     DEFAULT_CSS = """
@@ -2360,7 +2568,8 @@ class PokelikeApp(App):
         self._last_items_key       = None
         self._last_team_key        = None
         self._last_graph_key       = None
-        self._last_battle_team_key = None
+        self._last_battle_team_key  = None
+        self._last_team_full_key    = None
         self.map_carousel_idx = 0
 
     def compose(self) -> ComposeResult:
@@ -2386,6 +2595,7 @@ class PokelikeApp(App):
             yield CatchPokemonPanel(id="catch-panel")
         yield BattlePanel(id="battle-panel")
         yield ItemSelectPanel(id="item-select-panel")
+        yield TeamFullPanel(id="team-full-panel")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2394,6 +2604,7 @@ class PokelikeApp(App):
         self.query_one("#catch-layout").display       = False
         self.query_one("#battle-panel").display       = False
         self.query_one("#item-select-panel").display  = False
+        self.query_one("#team-full-panel").display    = False
         t = threading.Thread(target=self._browser_loop, daemon=True)
         t.start()
 
@@ -2539,13 +2750,15 @@ class PokelikeApp(App):
         is_catch       = self.game_screen == ScreenType.CATCH_POKEMON
         is_battle      = self.game_screen == ScreenType.BATTLE
         is_item_select = self.game_screen == ScreenType.ITEM_SELECT
-        is_custom      = is_map or is_catch or is_battle or is_item_select
+        is_team_full   = self.game_screen == ScreenType.TEAM_FULL
+        is_custom      = is_map or is_catch or is_battle or is_item_select or is_team_full
         try:
             self.query_one("#default-layout").display      = not is_custom
             self.query_one("#map-layout").display          = is_map
             self.query_one("#catch-layout").display        = is_catch
             self.query_one("#battle-panel").display        = is_battle
             self.query_one("#item-select-panel").display   = is_item_select
+            self.query_one("#team-full-panel").display     = is_team_full
         except Exception:
             pass
 
@@ -2667,6 +2880,70 @@ class PokelikeApp(App):
                     pass
             return
 
+        elif is_team_full:
+            team     = self.state.get("team", [])
+            incoming = self.state.get("incoming", [])
+
+            # Team grid — only rebuild when data changes
+            team_key = tuple(f"{p['name']}:{p.get('level')}" for p in team + incoming)
+            if team_key != self._last_team_full_key:
+                self._last_team_full_key = team_key
+                try:
+                    panel = self.query_one(TeamFullPanel)
+                    panel.query_one("#tf-incoming-label", Label).update(
+                        "  ".join(
+                            f"[bold #e8e8ff]{p['name']}[/]  [dim]{p.get('level','')}[/]"
+                            + ("  [#f5c518]★[/]" if p.get("is_shiny") else "")
+                            for p in incoming
+                        ) or "[dim]?[/]"
+                    )
+                    for ri, row in enumerate(panel.query(".tf-row")):
+                        row.query(TeamMemberCard).remove()
+                        row.query(Label).remove()
+                        children: list = []
+                        for ci in range(3):
+                            slot = ri * 3 + ci
+                            if slot < len(team):
+                                children.append(TeamMemberCard(
+                                    team[slot], str(slot + 1), slot == self.selected
+                                ))
+                            if ci < 2:
+                                children.append(Label(" ", classes="tf-gap"))
+                        if children:
+                            row.mount(*children)
+                except Exception:
+                    pass
+
+            # Selection highlight — in-place update, no remount
+            try:
+                cards = list(self.query_one(TeamFullPanel).query(TeamMemberCard))
+                for i, card in enumerate(cards):
+                    card.set_selected(i == self.selected)
+            except Exception:
+                pass
+
+            # Strip
+            strip_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected)
+            if strip_key != self._last_items_key:
+                self._last_items_key = strip_key
+                strip_items = self._items[len(team):]
+                try:
+                    strip    = self.query_one("#tf-strip", Horizontal)
+                    existing = list(strip.query(ActionItem))
+                    offset   = len(team)
+                    if len(existing) == len(strip_items):
+                        for i, w in enumerate(existing):
+                            w.refresh_state(strip_items[i], (offset + i) == self.selected)
+                    else:
+                        strip.query(ActionItem).remove()
+                        strip.mount(*[
+                            ActionItem(item, (offset + i) == self.selected)
+                            for i, item in enumerate(strip_items)
+                        ])
+                except Exception:
+                    pass
+            return
+
         else:
             try:
                 starter = self.query_one(StarterPickerWidget)
@@ -2702,6 +2979,10 @@ class PokelikeApp(App):
                             ActionItem(item, i == (self.selected - n_nodes))
                             for i, item in enumerate(util_items)
                         ])
+                    sel_idx = self.selected - n_nodes
+                    widgets = list(strip.query(ActionItem))
+                    if 0 <= sel_idx < len(widgets):
+                        widgets[sel_idx].scroll_visible(animate=False)
                 except Exception:
                     pass
             else:
@@ -2738,6 +3019,15 @@ class PokelikeApp(App):
         items = self._items
         if not items:
             return
+        if self.game_screen == ScreenType.TEAM_FULL and key in ("up", "down", "left", "right"):
+            self._team_full_nav(key)
+            return
+        if self.game_screen == ScreenType.MAP and key in ("up", "down", "left", "right"):
+            self._map_nav(key)
+            return
+        if self.game_screen in (ScreenType.ITEM_SELECT, ScreenType.CATCH_POKEMON) and key in ("up", "down", "left", "right"):
+            self._cards_strip_nav(key, len(self.state.get("choices", [])))
+            return
         if key == "up":
             self.selected = (self.selected - 1) % len(items)
             if self.game_screen == ScreenType.MAP:
@@ -2753,16 +3043,7 @@ class PokelikeApp(App):
                     self.map_carousel_idx = self.selected
             self._rebuild()
         elif key == "left":
-            if self.game_screen == ScreenType.MAP:
-                sv = self.swap_source[0]
-                in_pick = sv in ("swap", "item_pick") or isinstance(sv, int) or self.bag_mode[0]
-                self.selected = (self.selected - 1) % len(items)
-                if not in_pick:
-                    n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
-                    if self.selected < n_acc:
-                        self.map_carousel_idx = self.selected
-                self._rebuild()
-            elif self.game_screen in (ScreenType.STARTER_SELECT, ScreenType.CATCH_POKEMON, ScreenType.BATTLE, ScreenType.ITEM_SELECT):
+            if self.game_screen in (ScreenType.STARTER_SELECT, ScreenType.BATTLE):
                 self.selected = (self.selected - 1) % len(items)
                 self._rebuild()
             else:
@@ -2770,16 +3051,7 @@ class PokelikeApp(App):
                 self.selected_starter = (self.selected_starter - 1) % max(1, len(get_starters(gen)))
                 self._rebuild()
         elif key == "right":
-            if self.game_screen == ScreenType.MAP:
-                sv = self.swap_source[0]
-                in_pick = sv in ("swap", "item_pick") or isinstance(sv, int) or self.bag_mode[0]
-                self.selected = (self.selected + 1) % len(items)
-                if not in_pick:
-                    n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
-                    if self.selected < n_acc:
-                        self.map_carousel_idx = self.selected
-                self._rebuild()
-            elif self.game_screen in (ScreenType.STARTER_SELECT, ScreenType.CATCH_POKEMON, ScreenType.BATTLE, ScreenType.ITEM_SELECT):
+            if self.game_screen in (ScreenType.STARTER_SELECT, ScreenType.BATTLE):
                 self.selected = (self.selected + 1) % len(items)
                 self._rebuild()
             else:
@@ -2788,7 +3060,14 @@ class PokelikeApp(App):
                 self._rebuild()
         elif key == "enter":
             self._execute_item(self.selected)
-        elif key in ("escape", "q"):
+        elif key == "escape":
+            if self.game_screen == ScreenType.MAP:
+                sv = self.swap_source[0]
+                if sv is not None or self.bag_mode[0]:
+                    self.swap_source[0] = None
+                    self.bag_mode[0]    = False
+                    self._rebuild()
+        elif key == "q":
             self.exit()
         elif key == "j" and self.game_screen == ScreenType.MAP:
             state_json = json.dumps(self.state, indent=2)
@@ -2800,6 +3079,107 @@ class PokelikeApp(App):
                     if item.shortcut.lower() == char and item.enabled:
                         self._execute_item(i)
                         break
+
+    def _map_nav(self, direction: str) -> None:
+        items     = self._items
+        n_nodes   = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+        sv        = self.swap_source[0]
+        in_pick   = sv in ("swap", "item_pick") or isinstance(sv, int) or self.bag_mode[0]
+        if in_pick or n_nodes == 0:
+            delta = -1 if direction in ("up", "left") else 1
+            self.selected = (self.selected + delta) % len(items)
+            self._rebuild()
+            return
+
+        n_strip   = max(1, len(items) - n_nodes)
+        in_strip  = self.selected >= n_nodes
+        strip_idx = self.selected - n_nodes if in_strip else 0
+        node_idx  = self.selected if not in_strip else 0
+
+        if direction == "right":
+            if in_strip:
+                self.selected = n_nodes + (strip_idx + 1) % n_strip
+            else:
+                self.selected = (node_idx + 1) % n_nodes
+                self.map_carousel_idx = self.selected
+        elif direction == "left":
+            if in_strip:
+                self.selected = n_nodes + (strip_idx - 1) % n_strip
+            else:
+                self.selected = (node_idx - 1) % n_nodes
+                self.map_carousel_idx = self.selected
+        elif direction == "down":
+            if in_strip:
+                self.selected = 0
+                self.map_carousel_idx = 0
+            else:
+                self.selected = n_nodes
+        elif direction == "up":
+            if in_strip:
+                self.selected = min(strip_idx, n_nodes - 1)
+                self.map_carousel_idx = self.selected
+            else:
+                self.selected = n_nodes + n_strip - 1
+
+        self.selected = max(0, min(self.selected, len(items) - 1))
+        self._rebuild()
+
+    def _cards_strip_nav(self, direction: str, n_cards: int) -> None:
+        items    = self._items
+        n_strip  = max(1, len(items) - n_cards)
+        in_strip = self.selected >= n_cards
+        strip_idx = self.selected - n_cards if in_strip else 0
+        card_idx  = self.selected if not in_strip else 0
+
+        if direction == "right":
+            self.selected = (n_cards + (strip_idx + 1) % n_strip) if in_strip else (card_idx + 1) % max(1, n_cards)
+        elif direction == "left":
+            self.selected = (n_cards + (strip_idx - 1) % n_strip) if in_strip else (card_idx - 1) % max(1, n_cards)
+        elif direction == "down":
+            self.selected = 0 if in_strip else n_cards
+        elif direction == "up":
+            self.selected = min(strip_idx, max(0, n_cards - 1)) if in_strip else n_cards + n_strip - 1
+
+        self.selected = max(0, min(self.selected, len(items) - 1))
+        self._rebuild()
+
+    def _team_full_nav(self, direction: str) -> None:
+        items   = self._items
+        n_team  = len(self.state.get("team", []))   # 6
+        n_strip = max(1, len(items) - n_team)
+        sel     = self.selected
+        in_strip = sel >= n_team
+        strip_idx = sel - n_team if in_strip else 0
+        col  = sel % 3 if not in_strip else strip_idx
+        row  = sel // 3 if not in_strip else 2   # 0, 1, or 2 (strip)
+
+        if direction == "right":
+            if in_strip:
+                self.selected = n_team + (strip_idx + 1) % n_strip
+            else:
+                self.selected = row * 3 + (col + 1) % 3
+        elif direction == "left":
+            if in_strip:
+                self.selected = n_team + (strip_idx - 1) % n_strip
+            else:
+                self.selected = row * 3 + (col - 1) % 3
+        elif direction == "down":
+            if in_strip:
+                self.selected = min(strip_idx, 2)           # row 0, same col
+            elif row == 0:
+                self.selected = sel + 3                      # row 1
+            else:
+                self.selected = n_team                       # strip item 0
+        elif direction == "up":
+            if in_strip:
+                self.selected = n_team - 3 + min(strip_idx, 2)   # row 1, clamped col
+            elif row == 1:
+                self.selected = sel - 3                      # row 0
+            else:
+                self.selected = n_team + n_strip - 1         # last strip item
+
+        self.selected = max(0, min(self.selected, len(items) - 1))
+        self._rebuild()
 
     @work(thread=True)
     def _execute_item(self, index: int) -> None:

@@ -20,6 +20,7 @@ class ScreenType(Enum):
     GAME_OVER = auto()
     EVOLUTION = auto()
     CHAMPION = auto()
+    TEAM_FULL = auto()
     UNKNOWN = auto()
 
 
@@ -32,6 +33,7 @@ def detect(page: Page) -> ScreenType:
             if (vis('#evo-overlay'))        return 'EVOLUTION'
             if (vis('.win-title'))          return 'CHAMPION'
             if (vis('.gameover-title'))     return 'GAME_OVER'
+            if (vis('.swap-prompt'))        return 'TEAM_FULL'
             if (vis('.battle-header'))      return 'BATTLE'
             if (vis('.poke-choice-wrap'))   return 'CATCH_POKEMON'
             if (vis('.item-equip-overlay')) return 'ITEM_EQUIP'
