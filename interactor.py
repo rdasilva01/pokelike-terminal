@@ -292,7 +292,9 @@ class BagPanel(Static):
             for item in bag:
                 t.append(f"{item['name'][:17]}\n", style="#e8e8ff")
         else:
-            t.append("—", style="#555577")
+            t.append("—\n", style="#555577")
+        t.append("\n", style="")
+        t.append("R  refresh", style="dim #555577")
         self.update(t)
 
 
@@ -366,7 +368,6 @@ def build_main_menu_items(
         MenuItem("Pokédex",     "D", open_dex_main),
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -394,7 +395,6 @@ def build_starter_select_items(state: dict, page, refresh_fn: Callable, selected
     items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -451,16 +451,44 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ]
         return items
 
-    if swap_source is not None and swap_source[0] == "src":
+    # ── team pick: choose which Pokémon to act on ─────────────────────
+    if swap_source is not None and swap_source[0] == "team":
         items = []
         for i, p in enumerate(team):
             shortcut = digit_shortcuts[i] if i < len(digit_shortcuts) else "?"
-            def pick(idx=i):
-                swap_source[0] = idx
-                return f"Picked {team[idx]['name']} — choose swap target"
-            items.append(MenuItem(p["name"], shortcut, pick))
+            def pick_pokemon(idx=i):
+                swap_source[0] = ("menu", idx)
+                return f"Selected {team[idx]['name']}"
+            items.append(MenuItem(p["name"], shortcut, pick_pokemon))
         items += [
-            MenuItem("Cancel", "X", lambda: _cancel_all("Swap cancelled")),
+            MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
+            MenuItem("Quit",   "Q", lambda: "QUIT"),
+        ]
+        return items
+
+    # ── action sub-menu: Swap or Item ─────────────────────────────────
+    if swap_source is not None and isinstance(swap_source[0], tuple) and swap_source[0][0] == "menu":
+        _, poke_idx = swap_source[0]
+        poke_name   = team[poke_idx]["name"] if poke_idx < len(team) else "?"
+
+        def go_swap(idx=poke_idx):
+            swap_source[0] = idx
+            return f"Swap {poke_name} — pick target"
+
+        def go_item(idx=poke_idx):
+            page.evaluate("""(i) => {
+                const slot = document.querySelectorAll('.map-panel-left .team-slot')[i]
+                if (!slot) return
+                const badge = slot.querySelector('.held-item, .item-badge, [class*="item"]')
+                if (badge) badge.click()
+            }""", idx)
+            swap_source[0] = None
+            return f"Clicked item for {poke_name}"
+
+        items = [
+            MenuItem(f"Swap  {poke_name}", "S", go_swap),
+            MenuItem(f"Item  {poke_name}", "I", go_item),
+            MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
         ]
         return items
@@ -516,10 +544,10 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         items.append(MenuItem("Bag", "B", open_bag))
 
     if swap_source is not None and len(team) > 1:
-        def enter_swap():
-            swap_source[0] = "src"
-            return "Pick Pokémon to move"
-        items.append(MenuItem("Swap Pokémon", "W", enter_swap))
+        def enter_team():
+            swap_source[0] = "team"
+            return "Pick Pokémon"
+        items.append(MenuItem("Pokémon Team", "W", enter_team))
 
     def open_dex():
         return "SHOW_POKEDEX"
@@ -528,7 +556,6 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         MenuItem("Pokédex",     "D", open_dex),
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -568,7 +595,6 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
     items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -591,7 +617,6 @@ def build_pokemon_received_items(state: dict, page, refresh_fn: Callable, select
         MenuItem("Continue",    "C", do_continue),
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
 
@@ -628,7 +653,6 @@ def build_trade_offer_items(state: dict, page, refresh_fn: Callable, selected_st
     items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -656,7 +680,6 @@ def build_battle_items(state: dict, page, refresh_fn: Callable, selected_starter
     items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -680,16 +703,19 @@ def build_item_equip_items(state: dict, page, refresh_fn: Callable, selected_sta
 
     def keep_in_bag():
         page.evaluate("""() => {
-            const btn = Array.from(document.querySelectorAll('button'))
-                .find(b => b.textContent.trim() === 'Keep in Bag')
+            const btn = Array.from(document.querySelectorAll('button, .btn-primary, [class*="btn"]'))
+                .filter(b => b.getBoundingClientRect().width > 0)
+                .find(b => b.textContent.trim().toLowerCase().includes('keep'))
             if (btn) btn.click()
         }""")
         return "Kept in bag."
 
     def cancel():
         page.evaluate("""() => {
-            const btn = Array.from(document.querySelectorAll('button'))
-                .find(b => ['Cancel', 'Skip'].includes(b.textContent.trim()))
+            const words = ['cancel', 'skip', 'close', 'back']
+            const btn = Array.from(document.querySelectorAll('button, .btn-primary, [class*="btn"]'))
+                .filter(b => b.getBoundingClientRect().width > 0)
+                .find(b => words.some(w => b.textContent.trim().toLowerCase().includes(w)))
             if (btn) btn.click()
         }""")
         return "Cancelled."
@@ -723,7 +749,6 @@ def build_item_equip_items(state: dict, page, refresh_fn: Callable, selected_sta
     items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -760,7 +785,6 @@ def build_item_select_items(state: dict, page, refresh_fn: Callable, selected_st
     items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
@@ -827,7 +851,6 @@ def _fallback_items(refresh_fn: Callable, page=None) -> list[MenuItem]:
 
     return [
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",     "R", refresh_fn),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
 
@@ -947,8 +970,8 @@ class PokemonCard(Widget):
         hp_max = c.get("hp_max")
         if hp_cur is not None and hp_max:
             pct    = hp_cur / hp_max
-            filled = round(pct * 18)
-            bar    = "█" * filled + "░" * (18 - filled)
+            filled = round(pct * 9)
+            bar    = "█" * filled + "░" * (9 - filled)
             hp_cls = "hp-low" if pct < 0.2 else "hp-mid" if pct < 0.5 else "hp-ok"
             yield Label(f"{bar}  {hp_cur}/{hp_max}", classes=f"card-hp {hp_cls}")
 
@@ -1046,6 +1069,15 @@ class CatchPokemonPanel(Widget):
 # Map screen widgets
 # ---------------------------------------------------------------------------
 
+TYPE_EMOJI: dict[str, str] = {
+    "Normal":   "⬜", "Fire":     "🔥", "Water":    "💧",
+    "Grass":    "🌿", "Electric": "⚡", "Ice":      "❄️",
+    "Fighting": "👊", "Poison":   "☠️", "Ground":   "🌍",
+    "Flying":   "🌀", "Psychic":  "🔮", "Bug":      "🐛",
+    "Rock":     "🪨", "Ghost":    "👻", "Dragon":   "🐲",
+    "Dark":     "🌑", "Steel":    "⚙️", "Fairy":    "🌸",
+}
+
 NODE_META: dict[str, tuple[str, str]] = {
     "trainer":        ("⊗",  "#ff4455"),
     "boss":           ("♛",  "#f5c518"),
@@ -1068,7 +1100,7 @@ NODE_META: dict[str, tuple[str, str]] = {
 _ROW_SIZES  = [1, 2, 3, 4, 3, 4, 3, 2, 1]
 _STEP       = 4
 _ROW_OFFSET = [(4 - n) * 2 for n in _ROW_SIZES]   # [6,4,2,0,2,0,2,4,6]
-_GRID_W     = 13   # 0..12
+_GRID_W     = 15   # 0..14 (extra room for emoji to the right of nodes)
 _GRID_H     = 17   # 9 node rows + 8 connector rows
 
 # Map node index (0-22) → (grid_y, grid_x)
@@ -1145,6 +1177,7 @@ class TeamCard(Widget):
     .tc-hp-mid { height: 1; color: #f5c518; }
     .tc-hp-low { height: 1; color: #ff1744; }
     .tc-move   { height: 1; color: #555577; }
+    .tc-item   { height: 1; color: #4488ff; }
     .tc-empty  { color: #1e1e35; content-align: center middle; height: 1fr; }
     """
 
@@ -1183,14 +1216,17 @@ class TeamCard(Widget):
                 for t in types:
                     yield Label(t, classes=f"tc-type type-{t.lower()}")
         pct    = hp / 100
-        filled = round(pct * 14)
-        bar    = "█" * filled + "░" * (14 - filled)
+        filled = round(pct * 7)
+        bar    = "█" * filled + "░" * (7 - filled)
         hp_str = f"{hp_cur}/{hp_max}" if hp_cur is not None else f"{hp}%"
         hp_cls = "tc-hp-low" if hp < 20 else "tc-hp-mid" if hp < 50 else "tc-hp-ok"
         yield Label(f"{bar}  {hp_str}", classes=hp_cls)
         move_tier = p.get("move_tier")
         if move_tier is not None and types:
             yield Label(f"T{move_tier} · {types[0]}", classes="tc-move")
+        held = p.get("held_item")
+        if held:
+            yield Label(f"◆ {held}", classes="tc-item")
 
 
 class TeamGridPanel(Widget):
@@ -1305,12 +1341,30 @@ class MapGraphWidget(Static):
                 char, style = "·", "#2e2e50"
             grid[gy][gx] = (char, style)
 
-        # Render
+        # Type emojis — placed at gx+1; gx+2 is a None placeholder so the
+        # renderer skips that slot and subsequent chars stay aligned.
+        for idx, (gy, gx) in enumerate(_NODE_GRID_POS):
+            if idx >= len(nodes):
+                continue
+            n     = nodes[idx]
+            ntype = n.get("type", "")
+            if ntype not in ("trainer", "boss"):
+                continue
+            poke_type  = (n.get("poke_type") or "").strip()
+            first_type = poke_type.split("/")[0].strip()
+            emoji      = TYPE_EMOJI.get(first_type) or TYPE_EMOJI.get(poke_type, "")
+            if emoji and gx + 1 < _GRID_W:
+                grid[gy][gx + 1] = (emoji, "")
+                if gx + 2 < _GRID_W:
+                    grid[gy][gx + 2] = (None, "")  # consumed by wide emoji
+
+        # Render (skip None placeholder cells — consumed by a preceding wide emoji)
         result = Text()
         for row in grid:
             line = Text()
             for ch, st in row:
-                line.append(ch, style=st if st else "")
+                if ch is not None:
+                    line.append(ch, style=st if st else "")
             result.append_text(line)
             result.append("\n")
         self.update(result)
@@ -2051,6 +2105,14 @@ class PokelikeApp(App):
                             p          = PARSER_MAP.get(new_screen)
                             new_state  = p.parse(page) if p else _unknown_state(page, new_screen)
                             self.call_from_thread(self._apply_state, prev, new_screen, new_state)
+                            # Keep clicking through multi-phase evolution overlays
+                            if new_screen == ScreenType.EVOLUTION:
+                                page.evaluate("""() => {
+                                    const o = document.querySelector('.evo-overlay')
+                                    if (o) o.dispatchEvent(
+                                        new MouseEvent('click', {bubbles: true, cancelable: true})
+                                    )
+                                }""")
                         except Exception:
                             pass
 
@@ -2116,7 +2178,11 @@ class PokelikeApp(App):
             js = """() => { const b = Array.from(document.querySelectorAll('.btn-primary')).find(b => b.textContent.trim() === 'Try Again'); if (b) b.click() }"""
             self._task_queue.put((lambda: page.evaluate(js), [None], threading.Event()))
         elif new == ScreenType.EVOLUTION:
-            self._task_queue.put((lambda: _click_center(page), [None], threading.Event()))
+            evo_js = """() => {
+                const o = document.querySelector('.evo-overlay')
+                if (o) o.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}))
+            }"""
+            self._task_queue.put((lambda: page.evaluate(evo_js), [None], threading.Event()))
 
     def _rebuild(self) -> None:
         if not self._ui_ready or self.page is None:
@@ -2126,6 +2192,9 @@ class PokelikeApp(App):
             self.selected = max(0, min(self.selected, len(self._items) - 1))
 
         flash = time.monotonic() < self.flash_until
+
+        # Show screen type in the Header subtitle (always visible at top)
+        self.sub_title = self.game_screen.name.replace("_", " ")
 
         try:
             self.query_one(StatusBar).update_status(self.game_screen, self.state, flash)
@@ -2181,11 +2250,13 @@ class PokelikeApp(App):
 
             # Single node display (normal mode only)
             if not is_special:
-                self.map_carousel_idx = self.map_carousel_idx % max(1, n_nodes)
-                self.selected = self.map_carousel_idx
                 node_items = self._items[:n_nodes]
+                # selected within carousel range → sync carousel_idx
+                if n_nodes and self.selected < n_nodes:
+                    self.map_carousel_idx = self.selected
+                carousel_sel = self.map_carousel_idx % max(1, n_nodes)
                 try:
-                    self.query_one(SingleNodeDisplay).rebuild(node_items, accessible, self.map_carousel_idx)
+                    self.query_one(SingleNodeDisplay).rebuild(node_items, accessible, carousel_sel)
                 except Exception:
                     pass
 
@@ -2274,28 +2345,36 @@ class PokelikeApp(App):
             return
         if key == "up":
             self.selected = (self.selected - 1) % len(items)
+            if self.game_screen == ScreenType.MAP:
+                n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+                if self.selected < n_acc:
+                    self.map_carousel_idx = self.selected
             self._rebuild()
         elif key == "down":
             self.selected = (self.selected + 1) % len(items)
+            if self.game_screen == ScreenType.MAP:
+                n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+                if self.selected < n_acc:
+                    self.map_carousel_idx = self.selected
             self._rebuild()
         elif key == "left":
             if self.game_screen == ScreenType.MAP:
-                nodes_all  = self.state.get("nodes", [])
-                n_acc      = max(1, sum(1 for n in nodes_all if n["accessible"]))
-                self.map_carousel_idx = (self.map_carousel_idx - 1) % n_acc
-                self.selected = self.map_carousel_idx
-                self._rebuild()
+                n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+                if self.selected < n_acc:   # only in carousel range
+                    self.map_carousel_idx = (self.map_carousel_idx - 1) % max(1, n_acc)
+                    self.selected = self.map_carousel_idx
+                    self._rebuild()
             else:
                 gen = self.state.get("selected_gen") or "I"
                 self.selected_starter = (self.selected_starter - 1) % max(1, len(get_starters(gen)))
                 self._rebuild()
         elif key == "right":
             if self.game_screen == ScreenType.MAP:
-                nodes_all  = self.state.get("nodes", [])
-                n_acc      = max(1, sum(1 for n in nodes_all if n["accessible"]))
-                self.map_carousel_idx = (self.map_carousel_idx + 1) % n_acc
-                self.selected = self.map_carousel_idx
-                self._rebuild()
+                n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+                if self.selected < n_acc:   # only in carousel range
+                    self.map_carousel_idx = (self.map_carousel_idx + 1) % max(1, n_acc)
+                    self.selected = self.map_carousel_idx
+                    self._rebuild()
             else:
                 gen = self.state.get("selected_gen") or "I"
                 self.selected_starter = (self.selected_starter + 1) % max(1, len(get_starters(gen)))
@@ -2323,6 +2402,10 @@ class PokelikeApp(App):
         elif result == "SHOW_JSON":
             state_json = json.dumps(self.state, indent=2)
             self.call_from_thread(self.push_screen, JsonScreen(state_json))
+        else:
+            # For state-changing actions (cancel, swap mode enter, etc.) rebuild
+            # immediately instead of waiting for the next 0.5 s auto-refresh.
+            self.call_from_thread(self._rebuild)
 
 
 # ---------------------------------------------------------------------------

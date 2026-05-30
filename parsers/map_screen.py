@@ -75,6 +75,19 @@ class MapParser(AbstractParser):
             level  = self._parse_level(self._txt(slot, ".team-slot-lv"))
             hp_pct = self._parse_hp_pct(slot)
             ls = run_team[i] if i < len(run_team) else {}
+            # Held item: try several known LS field names then fall back to DOM
+            raw_held = (
+                ls.get("heldItem")
+                or ls.get("item")
+                or ls.get("equippedItem")
+                or ls.get("heldItemName")
+                or self._held_item_from_dom(slot)
+            )
+            # Item may be a dict {"name": "...", "id": "...", ...} or a plain string
+            if isinstance(raw_held, dict):
+                held = raw_held.get("name") or raw_held.get("id") or ""
+            else:
+                held = raw_held or ""
             team.append({
                 "name":       name,
                 "level":      level,
@@ -83,8 +96,26 @@ class MapParser(AbstractParser):
                 "hp_max":     ls.get("maxHp"),
                 "move_tier":  ls.get("moveTier"),
                 "types":      ls.get("types", []),
+                "held_item":  held or None,
             })
         return team
+
+    def _held_item_from_dom(self, slot) -> str:
+        """Try to scrape held-item name from the team-slot DOM element."""
+        for sel in (".held-item", ".item-badge", "[class*='held']", "[class*='equip']"):
+            try:
+                el = slot.locator(sel).first
+                if el.count() == 0:
+                    continue
+                text = el.inner_text(timeout=300).strip()
+                if text:
+                    return text
+                alt = el.get_attribute("alt") or el.get_attribute("title") or ""
+                if alt:
+                    return alt
+            except Exception:
+                pass
+        return ""
 
     def _parse_level(self, text: str) -> int | None:
         m = re.search(r"\d+", text)
@@ -129,14 +160,26 @@ class MapParser(AbstractParser):
             if (!svg) return []
 
             let lsNodes = []
-            const spriteLabelMap = {}
+            const indexLabelMap = {}
             try {
                 const run = JSON.parse(localStorage.getItem('poke_current_run') || '{}')
                 const lsMap = run.map?.nodes || {}
-                // Nodes may be keyed by index (0,1,2...) or by ID strings — collect both
                 lsNodes = Object.values(lsMap)
-                Object.values(lsMap).filter(n => n.accessible && n.trainerSprite).forEach(n => {
-                    try { spriteLabelMap[n.trainerSprite] = getNodeLabel(n, run) } catch(e) {}
+                lsNodes.forEach((n, i) => {
+                    try {
+                        // 1. Try the game's own label function (works for nodes with trainerSprite)
+                        let label = ''
+                        if (typeof getNodeLabel === 'function') {
+                            label = getNodeLabel(n, run) || ''
+                        }
+                        // 2. Direct field fallback for nodes the game hasn't fully initialised
+                        if (!label) {
+                            const t = n.pokemonType || n.trainerType || n.pokeType
+                                   || n.pokemon_type || n.poke_type || ''
+                            if (t) label = t + ' Pokemon'
+                        }
+                        if (label) indexLabelMap[i] = label
+                    } catch(e) {}
                 })
             } catch(e) {}
 
@@ -148,17 +191,21 @@ class MapParser(AbstractParser):
                     const sprite = src.split('/').pop()?.replace('.png','') || ''
                     const style = g.getAttribute('style') || ''
                     const lsNode = lsNodes[i] || {}
-                    // Try every known field name for completion
                     const lsDone = lsNode.done === true || lsNode.completed === true
                         || lsNode.state === 'done' || lsNode.state === 'completed'
                         || lsNode.cleared === true || lsNode.visited === true
+                    // SVG title/data-attribute fallback for type info
+                    const svgTitle = g.querySelector('title')?.textContent || ''
+                    const svgType  = g.getAttribute('data-pokemon-type')
+                                  || g.getAttribute('data-type') || ''
+                    const extraLabel = svgTitle || svgType
                     return {
                         index:      i,
                         sprite:     sprite,
                         accessible: lsNode.accessible || style.includes('pointer'),
                         ls_done:    lsDone,
-                        ls_raw:     lsNode,          // full LS node so we can see all fields
-                        nodeLabel:  spriteLabelMap[sprite] || ''
+                        ls_raw:     lsNode,
+                        nodeLabel:  indexLabelMap[i] || extraLabel || ''
                     }
                 })
         }""")
