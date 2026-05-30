@@ -128,11 +128,14 @@ class MapParser(AbstractParser):
             const svg = document.querySelector('.screen.active svg')
             if (!svg) return []
 
-            // Build sprite -> label map from localStorage for accessible trainer nodes
+            let lsNodes = []
             const spriteLabelMap = {}
             try {
                 const run = JSON.parse(localStorage.getItem('poke_current_run') || '{}')
-                Object.values(run.map?.nodes || {}).filter(n => n.accessible && n.trainerSprite).forEach(n => {
+                const lsMap = run.map?.nodes || {}
+                // Nodes may be keyed by index (0,1,2...) or by ID strings — collect both
+                lsNodes = Object.values(lsMap)
+                Object.values(lsMap).filter(n => n.accessible && n.trainerSprite).forEach(n => {
                     try { spriteLabelMap[n.trainerSprite] = getNodeLabel(n, run) } catch(e) {}
                 })
             } catch(e) {}
@@ -144,15 +147,18 @@ class MapParser(AbstractParser):
                     const src = img?.getAttribute('href') || img?.getAttribute('xlink:href') || ''
                     const sprite = src.split('/').pop()?.replace('.png','') || ''
                     const style = g.getAttribute('style') || ''
-                    const tx = g.getAttribute('transform') || ''
+                    const lsNode = lsNodes[i] || {}
+                    // Try every known field name for completion
+                    const lsDone = lsNode.done === true || lsNode.completed === true
+                        || lsNode.state === 'done' || lsNode.state === 'completed'
+                        || lsNode.cleared === true || lsNode.visited === true
                     return {
-                        index: i,
-                        sprite: sprite,
-                        completed: g.querySelector('circle') !== null,
-                        accessible: style.includes('pointer'),
-                        locked: style.includes('0.75'),
-                        transform: tx,
-                        nodeLabel: spriteLabelMap[sprite] || ''
+                        index:      i,
+                        sprite:     sprite,
+                        accessible: lsNode.accessible || style.includes('pointer'),
+                        ls_done:    lsDone,
+                        ls_raw:     lsNode,          // full LS node so we can see all fields
+                        nodeLabel:  spriteLabelMap[sprite] || ''
                     }
                 })
         }""")
@@ -161,7 +167,7 @@ class MapParser(AbstractParser):
         for n in nodes:
             sprite = unquote(n["sprite"])
             node_type = self._sprite_to_type(sprite)
-            if n["completed"]:
+            if n["ls_done"]:
                 state = "completed"
             elif n["accessible"]:
                 state = "available"
@@ -182,6 +188,7 @@ class MapParser(AbstractParser):
                 "accessible": n["accessible"],
                 "sprite":     sprite,
                 "poke_type":  poke_type,
+                "_ls":        n.get("ls_raw", {}),  # raw LS node — remove once correct field found
             })
         return result
 

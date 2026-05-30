@@ -8,18 +8,18 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from rich.align import Align
-from rich.console import Console
-from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
-from rich import box
 
 from textual.app import App, ComposeResult
-from textual.screen import Screen
-from textual.widgets import Static
 from textual.binding import Binding
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.screen import Screen
+from textual.widget import Widget
+from textual.widgets import (
+    DataTable, Footer, Header, Input, Label, Static
+)
 from textual import work
 
 from browser import connect_to_chrome
@@ -35,29 +35,26 @@ from parsers.main_menu import MainMenuParser
 from parsers.map_screen import MapParser
 from parsers.starter_select import StarterSelectParser
 
-console = Console()
-
 PARSER_MAP = {
-    ScreenType.MAIN_MENU:      MainMenuParser(),
-    ScreenType.STARTER_SELECT: StarterSelectParser(),
-    ScreenType.MAP:            MapParser(),
-    ScreenType.BATTLE:         BattleParser(),
-    ScreenType.TRADE_OFFER:    TradeOfferParser(),
+    ScreenType.MAIN_MENU:        MainMenuParser(),
+    ScreenType.STARTER_SELECT:   StarterSelectParser(),
+    ScreenType.MAP:              MapParser(),
+    ScreenType.BATTLE:           BattleParser(),
+    ScreenType.TRADE_OFFER:      TradeOfferParser(),
     ScreenType.POKEMON_RECEIVED: PokemonReceivedParser(),
-    ScreenType.CATCH_POKEMON:  CatchPokemonParser(),
-    ScreenType.ITEM_SELECT:    ItemSelectParser(),
-    ScreenType.ITEM_EQUIP:     ItemEquipParser(),
-    ScreenType.CHAMPION:       ChampionParser(),
+    ScreenType.CATCH_POKEMON:    CatchPokemonParser(),
+    ScreenType.ITEM_SELECT:      ItemSelectParser(),
+    ScreenType.ITEM_EQUIP:       ItemEquipParser(),
+    ScreenType.CHAMPION:         ChampionParser(),
 }
 
 ROMAN = {"I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6"}
 
-AUTO_REFRESH_INTERVAL = 0.5  # seconds
+AUTO_REFRESH_INTERVAL = 0.5
 
-# Starters per gen: (display_letter, rich_color)
 STARTERS: dict[str | None, list[tuple[str, str]]] = {
-    "I":  [("B", "green3"),      ("C", "dark_orange"), ("S", "dodger_blue1")],
-    "II": [("C", "green3"),      ("C", "dark_orange"), ("T", "dodger_blue1")],
+    "I":  [("B", "#4ade80"), ("C", "#fb923c"), ("S", "#38bdf8")],
+    "II": [("C", "#4ade80"), ("C", "#fb923c"), ("T", "#38bdf8")],
 }
 STARTERS_DEFAULT = STARTERS["I"]
 
@@ -79,268 +76,228 @@ class MenuItem:
 
 
 # ---------------------------------------------------------------------------
-# Rendering
+# Textual widgets
 # ---------------------------------------------------------------------------
 
-def render_starter_inline(starters: list[tuple[str, str]], selected: int) -> Text:
-    """Render B C S (or C C T) with the selected one bold and colored."""
-    t = Text()
-    for i, (letter, color) in enumerate(starters):
-        if i == selected:
-            t.append(f" {letter} ", style=f"bold {color} on grey23")
-        else:
-            t.append(f" {letter} ", style="dim")
-    return t
+class StatusBar(Static):
+    """One-line status bar: screen name · info · refresh dot."""
 
+    DEFAULT_CSS = """
+    StatusBar {
+        height: 1;
+        background: #0f0f1f;
+        color: #555577;
+        padding: 0 2;
+        border-bottom: solid #1e1e3a;
+    }
+    """
 
-def render(
-    screen: ScreenType,
-    state: dict,
-    items: list[MenuItem],
-    selected: int,
-    refresh_flash: bool,
-    selected_starter: int,
-    swap_source=None,
-    bag_mode=None,
-) -> Align:
-    try:
-        term_w = console.size.width
-    except Exception:
-        term_w = os.get_terminal_size().columns
-    panel_w = min(92, term_w - 4)
+    def update_status(self, screen: ScreenType, state: dict, flash: bool) -> None:
+        dot = "[bold #f5c518]●[/]" if flash else "[dim]·[/]"
+        name = f"[bold #00d7d7]{screen.name.replace('_', ' ')}[/]"
+        info = self._build_info(screen, state)
+        self.update(Text.from_markup(f" {name}  {info}  {dot}"))
 
-    layout = Table.grid(padding=(0, 1))
-    layout.add_column(ratio=1)
-
-    # Header
-    dot = "[bold yellow]●[/]" if refresh_flash else "[dim]·[/]"
-
-    if screen == ScreenType.CATCH_POKEMON:
-        choices = state.get("choices", [])
-        parts = [c["name"] for c in choices]
-        header = Text.assemble(
-            ("  CATCH POKÉMON  ", "bold cyan"),
-            ("  ".join(parts), "white"),
-        )
-        header.append_text(Text.from_markup(f"   {dot}"))
-    elif screen == ScreenType.ITEM_SELECT:
-        choices = state.get("choices", [])
-        parts = [c["name"] for c in choices]
-        header = Text.assemble(
-            ("  ITEM FOUND  ", "bold cyan"),
-            ("  ".join(parts), "white"),
-        )
-        header.append_text(Text.from_markup(f"   {dot}"))
-    elif screen == ScreenType.ITEM_EQUIP:
-        item_name = state.get("item_name", "?")
-        item_desc = state.get("item_desc", "")
-        is_tutor  = state.get("is_move_tutor", False)
-        label     = "  MOVE TUTOR  " if is_tutor else "  EQUIP ITEM  "
-        header = Text.assemble(
-            (label, "bold cyan"),
-            (item_desc if is_tutor else item_name, "white"),
-        )
-        header.append_text(Text.from_markup(f"   {dot}"))
-    elif screen == ScreenType.POKEMON_RECEIVED:
-        p = state.get("pokemon") or {}
-        title = state.get("title", "Pokémon received!")
-        shiny = " ★" if p.get("is_shiny") else ""
-        types = "/".join(p.get("types", []))
-        header = Text.assemble(
-            ("  RECEIVED  ", "bold cyan"),
-            (f"{p.get('name','?')}{shiny}", "bold white"),
-            (f"  {p.get('level','')}  [{types}]", "dim"),
-            (f"  {p.get('move','')} {p.get('move_power','')}", "white"),
-        )
-        header.append_text(Text.from_markup(f"   {dot}"))
-    elif screen == ScreenType.CHAMPION:
-        run_count = state.get("run_count", "")
-        team = state.get("team", [])
-        names = "  ".join(f"{p['name']} {p['level']}" for p in team)
-        header = Text.assemble(
-            ("  CHAMPION!  ", "bold yellow"),
-            (run_count, "gold1"),
-            (f"  {names}", "white"),
-        )
-        header.append_text(Text.from_markup(f"   {dot}"))
-    elif screen == ScreenType.TRADE_OFFER:
-        members = state.get("members", [])
-        parts = [f"{m['name']} {m['level']}" for m in members]
-        header = Text.assemble(("  TRADE OFFER  ", "bold cyan"), ("  |  ".join(parts), "white"))
-        header.append_text(Text.from_markup(f"   {dot}"))
-    elif screen == ScreenType.BATTLE:
-        header_txt = state.get("header", "Battle")
-        can_cont   = state.get("can_continue", False)
-        cont_hint  = "  [bold green]CONTINUE READY[/]" if can_cont else ""
-        header = Text.assemble(("  BATTLE  ", "bold cyan"), (header_txt, "white"))
-        header.append_text(Text.from_markup(f"{cont_hint}   {dot}"))
-    elif screen == ScreenType.MAP:
-        stage = state.get("stage", {})
-        boss  = stage.get("boss") or "?"
-        btype = stage.get("boss_type") or ""
-        stage_num = stage.get("number") or "?"
-        badges = state.get("badges", 0)
-        header = Text.assemble(
-            ("  MAP ", "dim"),
-            (f"{stage_num}", "bold cyan"),
-            (f"  vs {boss}", "bold white"),
-            (f" ({btype})", "dim"),
-            ("  badges: ", "dim"),
-            (str(badges), "yellow"),
-        )
-        header.append_text(Text.from_markup(f"   {dot}"))
-    else:
+    @staticmethod
+    def _build_info(screen: ScreenType, state: dict) -> str:
+        if screen == ScreenType.CATCH_POKEMON:
+            parts = [c["name"] for c in state.get("choices", [])]
+            return f"[#e8e8ff]{'  ·  '.join(parts)}[/]"
+        if screen == ScreenType.ITEM_SELECT:
+            parts = [c["name"] for c in state.get("choices", [])]
+            return f"[#e8e8ff]{'  ·  '.join(parts)}[/]"
+        if screen == ScreenType.ITEM_EQUIP:
+            label = "MOVE TUTOR" if state.get("is_move_tutor") else "EQUIP ITEM"
+            name  = state.get("item_desc" if state.get("is_move_tutor") else "item_name", "?")
+            return f"[dim]{label}[/]  [#e8e8ff]{name}[/]"
+        if screen == ScreenType.POKEMON_RECEIVED:
+            p     = state.get("pokemon") or {}
+            shiny = " [bold yellow]★[/]" if p.get("is_shiny") else ""
+            types = "/".join(p.get("types", []))
+            return (
+                f"[bold #e8e8ff]{p.get('name','?')}[/]{shiny}"
+                f"  [dim]Lv{p.get('level','')}  [{types}]  {p.get('move','')}[/]"
+            )
+        if screen == ScreenType.CHAMPION:
+            run   = state.get("run_count", "")
+            names = "  ".join(
+                f"{p['name']} {p['level']}" for p in state.get("team", [])
+            )
+            return f"[bold #f5c518]{run}[/]  [#e8e8ff]{names}[/]"
+        if screen == ScreenType.TRADE_OFFER:
+            parts = [
+                f"{m['name']} {m['level']}" for m in state.get("members", [])
+            ]
+            return f"[#e8e8ff]{'  |  '.join(parts)}[/]"
+        if screen == ScreenType.BATTLE:
+            cont  = "  [bold #00e676]CONTINUE READY[/]" if state.get("can_continue") else ""
+            return f"[#e8e8ff]{state.get('header', 'Battle')}[/]{cont}"
+        if screen == ScreenType.MAP:
+            stage     = state.get("stage", {})
+            boss      = stage.get("boss") or "?"
+            btype     = stage.get("boss_type") or ""
+            stage_num = stage.get("number") or "?"
+            badges    = state.get("badges", 0)
+            return (
+                f"[dim]stage[/] [bold #00d7d7]{stage_num}[/]"
+                f"  [bold #e8e8ff]vs {boss}[/]"
+                f"  [dim]{btype}[/]"
+                f"  [dim]badges[/] [#f5c518]{badges}[/]"
+            )
+        # MAIN_MENU and others
         user = state.get("logged_in_user") or "not logged in"
         gen  = state.get("selected_gen") or "I"
         gens = state.get("available_gens", [])
         gen_display = "  ".join(
-            f"[bold yellow]{ROMAN.get(g, g)}[/]" if g == gen else f"[dim]{ROMAN.get(g, g)}[/]"
+            f"[bold #f5c518]{ROMAN.get(g, g)}[/]" if g == gen
+            else f"[dim]{ROMAN.get(g, g)}[/]"
             for g in gens
         )
-        header = Text.assemble(
-            ("  ", ""),
-            (screen.name.replace("_", " "), "bold cyan"),
-            ("    user: ", "dim"),
-            (user, "green"),
-            ("    gen: ", "dim"),
-        )
-        header.append_text(Text.from_markup(f"{gen_display}   {dot}"))
+        return f"[dim]user[/] [#00e676]{user}[/]  [dim]gen[/]  {gen_display}"
 
-    layout.add_row(Panel(header, box=box.SIMPLE, style="on grey11"))
 
-    # Menu table
-    menu_table = Table.grid(padding=(0, 2))
-    menu_table.add_column(width=2)
-    menu_table.add_column(min_width=22, no_wrap=True)
-    menu_table.add_column(width=6)
+class StarterPickerWidget(Static):
+    """Compact B / C / S starter selector shown on the MAIN_MENU screen."""
 
-    for i, item in enumerate(items):
-        is_sel = (i == selected)
-        if not item.enabled:
-            arrow = Text(">", style="dim yellow") if is_sel else Text(" ")
-            label = Text(item.label, style="dim strike")
-            key   = Text(f"[{item.shortcut}]", style="dim")
-        elif is_sel:
-            arrow = Text("❯", style="bold yellow")
-            label = Text(item.label, style="bold white on grey23")
-            key   = Text(f"[{item.shortcut}]", style="bold yellow")
-        else:
-            arrow = Text(" ")
-            label = Text(item.label, style="white")
-            key   = Text(f"[{item.shortcut}]", style="dim cyan")
-        menu_table.add_row(arrow, label, key)
+    DEFAULT_CSS = """
+    StarterPickerWidget {
+        width: 18;
+        border: round #2a2a4a;
+        background: #12121f;
+        padding: 1 1;
+        margin-left: 1;
+        display: none;
+        align: center top;
+        height: auto;
+    }
+    """
 
-    if screen == ScreenType.MAIN_MENU:
-        gen = state.get("selected_gen") or "I"
-        starters = get_starters(gen)
-        starter_widget = render_starter_inline(starters, selected_starter)
-        side = Table.grid(padding=(1, 1))
-        side.add_column()
-        side.add_row(Text("starter", style="dim"))
-        side.add_row(starter_widget)
-        side.add_row(Text("◀ ▶ pick", style="dim"))
-        outer = Table.grid()
-        outer.add_column(ratio=1)
-        outer.add_column(width=13)
-        outer.add_row(menu_table, side)
-        layout.add_row(Panel(outer, title="[dim]actions[/]", box=box.ROUNDED, padding=(1, 2)))
-        footer_hint = "↑↓ navigate   ◀▶ starter   Enter / letter select"
-    elif screen == ScreenType.MAP:
-        # --- left: team panel ---
-        swap_val = swap_source[0] if swap_source is not None else None
+    def update_starters(self, starters: list[tuple[str, str]], selected: int) -> None:
+        t = Text()
+        t.append("starter\n", style="#555577")
+        for i, (letter, color) in enumerate(starters):
+            if i == selected:
+                t.append(f" {letter} ", style=f"bold {color} on #1e1e35")
+            else:
+                t.append(f" {letter} ", style="dim")
+        t.append("\n◀ ▶ pick", style="#555577")
+        self.update(t)
+
+
+class PokemonTeamPanel(Static):
+    """Team display for the MAP screen."""
+
+    DEFAULT_CSS = """
+    PokemonTeamPanel {
+        width: 3fr;
+        border: round #2a2a4a;
+        background: #12121f;
+        padding: 1 1;
+        margin-right: 1;
+        height: 1fr;
+    }
+    """
+
+    def update_team(self, team: list, swap_val) -> None:
         swap_src_idx = swap_val if isinstance(swap_val, int) else None
-        team = state.get("team", [])
 
-        def make_poke_block(pi, p):
+        def make_block(pi: int, p: dict) -> Text:
             hp        = p.get("hp_pct", 100)
             hp_cur    = p.get("hp_current")
             hp_max    = p.get("hp_max")
             move_tier = p.get("move_tier")
             types     = p.get("types", [])
-            color     = "green3" if hp > 50 else "yellow" if hp > 20 else "red"
+            color     = "#00e676" if hp > 50 else "#f5c518" if hp > 20 else "#ff1744"
             hp_str    = f"{hp_cur}/{hp_max}" if hp_cur is not None else f"{hp}%"
-            move_str  = (f"T{move_tier} {types[0]}" if move_tier is not None and types else "")
+            move_str  = f"T{move_tier} {types[0]}" if move_tier is not None and types else ""
             if swap_src_idx == pi:
-                name_style = "bold cyan reverse"
+                name_style = "bold #00d7d7 reverse"
             elif swap_val == "src":
                 name_style = f"bold {color} dim"
             else:
                 name_style = f"bold {color}"
-            col = Table.grid()
-            col.add_column()
-            col.add_row(Text(f"{pi + 1}. {p['name']}", style=name_style))
-            col.add_row(Text("/".join(types), style="dim"))
-            col.add_row(Text(f"Lv{p['level']}  {hp_str}", style=color))
+            t = Text()
+            t.append(f"{pi + 1}. {p['name']}\n", style=name_style)
+            t.append("/".join(types) + "\n", style="#555577")
+            t.append(f"Lv{p['level']}  {hp_str}\n", style=color)
             if move_str:
-                col.add_row(Text(move_str, style="dim"))
-            return col
+                t.append(move_str + "\n", style="#555577")
+            return t
 
+        if not team:
+            self.update(Text("[dim]no team[/]"))
+            return
+
+        header = Text("[dim]TEAM[/]\n", style="")
         if len(team) > 3:
-            left_team  = team[:3]
-            right_team = team[3:]
-            col_a = Table.grid(padding=(0, 0))
-            col_a.add_column()
-            for pi, p in enumerate(left_team):
-                col_a.add_row(make_poke_block(pi, p))
-                col_a.add_row(Text(""))
-            col_b = Table.grid(padding=(0, 0))
-            col_b.add_column()
-            for pi, p in enumerate(right_team):
-                col_b.add_row(make_poke_block(pi + 3, p))
-                col_b.add_row(Text(""))
-            two_col = Table.grid(padding=(0, 2))
-            two_col.add_column(ratio=1)
-            two_col.add_column(ratio=1)
-            two_col.add_row(col_a, col_b)
-            team_table = two_col
+            left  = team[:3]
+            right = team[3:]
+            grid  = Table.grid(padding=(0, 2))
+            grid.add_column(ratio=1)
+            grid.add_column(ratio=1)
+            col_a = Text()
+            for pi, p in enumerate(left):
+                col_a.append_text(make_block(pi, p))
+                col_a.append("\n")
+            col_b = Text()
+            for pi, p in enumerate(right):
+                col_b.append_text(make_block(pi + 3, p))
+                col_b.append("\n")
+            grid.add_row(col_a, col_b)
+            body = Text.from_markup("[dim]TEAM[/]\n")
+            self.update(body)
+            # Use a grid renderable since Static accepts Rich renderables
+            combined = Table.grid(padding=(0, 2))
+            combined.add_column(ratio=1)
+            combined.add_column(ratio=1)
+            ltext = Text()
+            for pi, p in enumerate(left):
+                ltext.append_text(make_block(pi, p))
+                ltext.append("\n")
+            rtext = Text()
+            for pi, p in enumerate(right):
+                rtext.append_text(make_block(pi + 3, p))
+                rtext.append("\n")
+            combined.add_row(ltext, rtext)
+            self.update(combined)
         else:
-            team_table = Table.grid(padding=(0, 1))
-            team_table.add_column()
+            body = Text()
             for pi, p in enumerate(team):
-                team_table.add_row(make_poke_block(pi, p))
-                team_table.add_row(Text(""))
+                body.append_text(make_block(pi, p))
+                body.append("\n")
+            self.update(body)
 
-        # --- right: bag panel ---
-        bag_table = Table.grid(padding=(0, 1))
-        bag_table.add_column()
-        bag = state.get("bag", [])
+
+class BagPanel(Static):
+    """Bag display for the MAP screen."""
+
+    BORDER_TITLE = "BAG"
+
+    DEFAULT_CSS = """
+    BagPanel {
+        width: 21;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 1;
+        height: 1fr;
+        margin-left: 1;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    """
+
+    def update_bag(self, bag: list) -> None:
+        t = Text()
         if bag:
             for item in bag:
-                bag_table.add_row(Text(item["name"], style="white"))
+                t.append(f"{item['name'][:17]}\n", style="#e8e8ff")
         else:
-            bag_table.add_row(Text("empty", style="dim"))
-
-        three_col = Table.grid(padding=(0, 1))
-        three_col.add_column(ratio=3)
-        three_col.add_column(ratio=4)
-        three_col.add_column(ratio=1)
-        three_col.add_row(
-            Panel(team_table, title="[dim]team[/]", box=box.SIMPLE),
-            Panel(menu_table, title="[dim]actions[/]", box=box.ROUNDED, padding=(1, 1)),
-            Panel(bag_table,  title="[dim]bag[/]",  box=box.SIMPLE),
-        )
-        layout.add_row(three_col)
-        _bag_open = bag_mode[0] if bag_mode is not None else False
-        if _bag_open:
-            footer_hint = "Pick item to equip   X cancel"
-        elif swap_val == "src":
-            footer_hint = "Pick Pokémon to move   X cancel"
-        elif isinstance(swap_val, int):
-            footer_hint = "Pick swap target   X cancel"
-        else:
-            footer_hint = "↑↓ navigate   Enter / letter select   B bag   W swap"
-    else:
-        layout.add_row(Panel(menu_table, title="[dim]actions[/]", box=box.ROUNDED, padding=(1, 2)))
-        footer_hint = "↑↓ navigate   Enter / letter select"
-
-    layout.add_row(Text(f"  {footer_hint}", style="dim"))
-
-    panel = Panel(layout, title="[bold yellow]POKELIKE[/] [dim]automation[/]", box=box.DOUBLE_EDGE, width=panel_w)
-    return Align(panel, align="center", vertical="middle")
+            t.append("—", style="#555577")
+        self.update(t)
 
 
 # ---------------------------------------------------------------------------
-# Auto-starter click (called when STARTER_SELECT screen is detected)
+# Auto-starter click
 # ---------------------------------------------------------------------------
 
 def _click_center(page) -> None:
@@ -367,9 +324,6 @@ def build_main_menu_items(
     state: dict, page, refresh_fn: Callable, selected_starter: int
 ) -> list[MenuItem]:
 
-    gen = state.get("selected_gen") or "I"
-    starters = get_starters(gen)
-
     def click_btn(text):
         def _action():
             page.evaluate(
@@ -382,7 +336,6 @@ def build_main_menu_items(
             )
             return f"Clicked: {text}"
         return _action
-
 
     def click_gen(roman):
         def _action():
@@ -419,17 +372,6 @@ def build_main_menu_items(
     return items
 
 
-def show_raw_json(state: dict) -> str:
-    """Legacy blocking function — kept for reference. Not used in Textual mode."""
-    lines = json.dumps(state, indent=2).splitlines()
-    return ""
-
-
-def show_pokedex(page) -> str:
-    """Legacy blocking function — kept for reference. Not used in Textual mode."""
-    return ""
-
-
 def build_starter_select_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
     starters = state.get("starters", [])
 
@@ -459,26 +401,26 @@ def build_starter_select_items(state: dict, page, refresh_fn: Callable, selected
 
 
 NODE_TYPE_LABEL = {
-    "trainer":       "Trainer battle",
-    "wild_encounter":"Wild encounter",
-    "catch_pokemon": "Catch Pokémon",
-    "move_tutor":    "Move tutor",
-    "mystery":       "Mystery event",
-    "pokecenter":    "Pokémon Center",
-    "shop":          "Shop",
-    "item":          "Item",
-    "trade":         "Trade",
-    "boss":          "GYM LEADER",
-    "start":         "Start",
+    "trainer":        "Trainer battle",
+    "wild_encounter": "Wild encounter",
+    "catch_pokemon":  "Catch Pokémon",
+    "move_tutor":     "Move tutor",
+    "mystery":        "Mystery event",
+    "pokecenter":     "Pokémon Center",
+    "shop":           "Shop",
+    "item":           "Item",
+    "trade":          "Trade",
+    "boss":           "GYM LEADER",
+    "start":          "Start",
 }
 
 
 def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: int,
                     swap_source=None, bag_mode=None) -> list[MenuItem]:
-    team = state.get("team", [])
-    bag  = state.get("bag", [])
-    nodes = state.get("nodes", [])
-    accessible = [n for n in nodes if n["accessible"]]
+    team   = state.get("team", [])
+    bag    = state.get("bag", [])
+    nodes  = state.get("nodes", [])
+    accessible      = [n for n in nodes if n["accessible"]]
     digit_shortcuts = "123456789"
 
     def reload_page():
@@ -490,7 +432,6 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         if bag_mode   is not None: bag_mode[0]   = False
         return msg
 
-    # --- bag pick mode ---
     if bag_mode is not None and bag_mode[0]:
         items = []
         for i, item in enumerate(bag):
@@ -510,7 +451,6 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ]
         return items
 
-    # --- swap source-pick mode ---
     if swap_source is not None and swap_source[0] == "src":
         items = []
         for i, p in enumerate(team):
@@ -525,10 +465,9 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ]
         return items
 
-    # --- swap destination-pick mode ---
     if swap_source is not None and isinstance(swap_source[0], int):
-        src_idx = swap_source[0]
-        items = []
+        src_idx  = swap_source[0]
+        items    = []
         dest_num = 0
         for i, p in enumerate(team):
             if i == src_idx:
@@ -549,7 +488,6 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ]
         return items
 
-    # --- normal mode ---
     node_shortcuts = "123456789abcdefghijklmnopqrstuvwxyz"
 
     def click_node(idx):
@@ -562,15 +500,12 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
             return f"Clicked node {idx}"
         return _action
 
-    def sprite_to_class(sprite: str) -> str:
-        return re.sub(r"([A-Z])", r" \1", sprite).strip().title()
-
     items = []
     for i, node in enumerate(accessible):
-        label = NODE_TYPE_LABEL.get(node["type"], node["type"].replace("_", " ").title())
+        label    = NODE_TYPE_LABEL.get(node["type"], node["type"].replace("_", " ").title())
         if node["type"] == "trainer":
             poke_type = node.get("poke_type", "")
-            label = f"Trainer battle  [{poke_type}]" if poke_type else "Trainer battle"
+            label     = f"Trainer battle  [{poke_type}]" if poke_type else "Trainer battle"
         shortcut = node_shortcuts[i] if i < len(node_shortcuts) else "?"
         items.append(MenuItem(label, shortcut, click_node(node["index"])))
 
@@ -618,10 +553,10 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
 
     items = []
     for i, c in enumerate(choices):
-        shiny = " ★" if c.get("is_shiny") else ""
+        shiny  = " ★" if c.get("is_shiny") else ""
         caught = " ✓" if c.get("is_caught") else ""
-        types = "/".join(c.get("types", []))
-        label = f"{c['name']}{shiny}{caught}  Lv{c['level']}  [{types}]"
+        types  = "/".join(c.get("types", []))
+        label  = f"{c['name']}{shiny}{caught}  Lv{c['level']}  [{types}]"
         items.append(MenuItem(label, str(i + 1), pick(i)))
 
     items.append(MenuItem("Skip (flee)", "S", skip))
@@ -631,10 +566,10 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
         return "Page reloaded."
 
     items += [
-        MenuItem("Raw JSON", "J", lambda: "SHOW_JSON"),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
-        MenuItem("Refresh",    "R", refresh_fn),
-        MenuItem("Quit",       "Q", lambda: "QUIT"),
+        MenuItem("Refresh",     "R", refresh_fn),
+        MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
     return items
 
@@ -683,7 +618,7 @@ def build_trade_offer_items(state: dict, page, refresh_fn: Callable, selected_st
         return "Page reloaded."
 
     shortcuts = "123456789"
-    items = []
+    items     = []
     for i, m in enumerate(members):
         types = "/".join(m.get("types", []))
         label = f"Trade {m['name']}  {m['level']}  [{types}]  → random +3 lvls"
@@ -759,10 +694,10 @@ def build_item_equip_items(state: dict, page, refresh_fn: Callable, selected_sta
         }""")
         return "Cancelled."
 
-    is_tutor       = state.get("is_move_tutor", False)
+    is_tutor        = state.get("is_move_tutor", False)
     has_keep_in_bag = state.get("has_keep_in_bag", True)
-    shortcuts = "123456789"
-    items = []
+    shortcuts       = "123456789"
+    items           = []
     for i, p in enumerate(pokemon):
         info   = p.get("info", "")
         action = p.get("action", "")
@@ -847,31 +782,31 @@ def build_champion_items(state: dict, page, refresh_fn: Callable, selected_start
         return "Page reloaded."
 
     return [
-        MenuItem("Play Again",       "P", click_btn("Play Again")),
-        MenuItem("Climb the Tower",  "T", click_btn("🗼 Climb the Tower")),
-        MenuItem("Hall of Fame",     "H", click_btn("🏛️ Hall of Fame")),
-        MenuItem("Raw JSON",         "J", lambda: "SHOW_JSON"),
-        MenuItem("Reload Page",      "R", reload_page),
-        MenuItem("Quit",             "Q", lambda: "QUIT"),
+        MenuItem("Play Again",      "P", click_btn("Play Again")),
+        MenuItem("Climb the Tower", "T", click_btn("🗼 Climb the Tower")),
+        MenuItem("Hall of Fame",    "H", click_btn("🏛️ Hall of Fame")),
+        MenuItem("Raw JSON",        "J", lambda: "SHOW_JSON"),
+        MenuItem("Reload Page",     "R", reload_page),
+        MenuItem("Quit",            "Q", lambda: "QUIT"),
     ]
 
 
 MENU_BUILDERS = {
-    ScreenType.MAIN_MENU:      build_main_menu_items,
-    ScreenType.STARTER_SELECT: build_starter_select_items,
-    ScreenType.MAP:            build_map_items,
-    ScreenType.BATTLE:         build_battle_items,
+    ScreenType.MAIN_MENU:        build_main_menu_items,
+    ScreenType.STARTER_SELECT:   build_starter_select_items,
+    ScreenType.MAP:              build_map_items,
+    ScreenType.BATTLE:           build_battle_items,
     ScreenType.TRADE_OFFER:      build_trade_offer_items,
     ScreenType.POKEMON_RECEIVED: build_pokemon_received_items,
-    ScreenType.CATCH_POKEMON:  build_catch_pokemon_items,
-    ScreenType.ITEM_SELECT:    build_item_select_items,
-    ScreenType.ITEM_EQUIP:     build_item_equip_items,
-    ScreenType.CHAMPION:       build_champion_items,
+    ScreenType.CATCH_POKEMON:    build_catch_pokemon_items,
+    ScreenType.ITEM_SELECT:      build_item_select_items,
+    ScreenType.ITEM_EQUIP:       build_item_equip_items,
+    ScreenType.CHAMPION:         build_champion_items,
 }
 
 
 # ---------------------------------------------------------------------------
-# Helpers shared with old run_tui
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _execute(items: list[MenuItem], index: int) -> str:
@@ -902,95 +837,911 @@ def _unknown_state(page, screen: ScreenType) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Type palette
+# ---------------------------------------------------------------------------
+
+TYPE_COLORS: dict[str, str] = {
+    "Normal":   "#aaaaaa", "Fire":     "#ff7722", "Water":    "#4488ff",
+    "Grass":    "#44cc55", "Electric": "#ffdd11", "Ice":      "#55dddd",
+    "Fighting": "#cc3322", "Poison":   "#aa33bb", "Ground":   "#ddaa33",
+    "Flying":   "#8899ee", "Psychic":  "#ff3377", "Bug":      "#99bb22",
+    "Rock":     "#bbaa55", "Ghost":    "#6644aa", "Dragon":   "#6633ff",
+    "Dark":     "#664433", "Steel":    "#99aabb", "Fairy":    "#ff88cc",
+}
+
+
+# ---------------------------------------------------------------------------
+# Pokémon card (catch screen)
+# ---------------------------------------------------------------------------
+
+class PokemonCard(Widget):
+    """Rich stat card for one catchable Pokémon."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    PokemonCard {
+        width: 1fr;
+        height: 1fr;
+        border: round #3a3a5a;
+        background: #0f0f22;
+        padding: 1 2;
+        margin: 0 1;
+        layout: vertical;
+    }
+    PokemonCard.selected { border: round #f5c518; background: #18183a; }
+    PokemonCard.shiny    { border: round #ffdd22; }
+
+    .card-shortcut { color: #f5c518; text-style: bold; margin-bottom: 1; }
+    .card-name     { color: #e8e8ff; text-style: bold; }
+    .card-caught   { color: #00e676; }
+    .card-level    { color: #555577; margin-bottom: 1; }
+
+    .card-types  { height: 1; margin-bottom: 1; }
+    .type-badge  {
+        width: auto; height: 1; padding: 0 1; margin-right: 1;
+        text-style: bold; content-align: center middle;
+    }
+    .type-normal   { color: #aaaaaa; background: #2a2a2a; }
+    .type-fire     { color: #ff7722; background: #2a1000; }
+    .type-water    { color: #4488ff; background: #00082a; }
+    .type-grass    { color: #44cc55; background: #002a0a; }
+    .type-electric { color: #ffdd11; background: #2a2200; }
+    .type-ice      { color: #55dddd; background: #002a2a; }
+    .type-fighting { color: #cc3322; background: #2a0800; }
+    .type-poison   { color: #aa33bb; background: #1a0022; }
+    .type-ground   { color: #ddaa33; background: #2a1a00; }
+    .type-flying   { color: #8899ee; background: #0a1030; }
+    .type-psychic  { color: #ff3377; background: #2a0015; }
+    .type-bug      { color: #99bb22; background: #1a2200; }
+    .type-rock     { color: #bbaa55; background: #1a1500; }
+    .type-ghost    { color: #6644aa; background: #10001a; }
+    .type-dragon   { color: #6633ff; background: #0d0030; }
+    .type-dark     { color: #997766; background: #1a1000; }
+    .type-steel    { color: #99aabb; background: #101520; }
+    .type-fairy    { color: #ff88cc; background: #2a0018; }
+
+    .card-hp    { margin-bottom: 1; }
+    .hp-ok  { color: #00e676; }
+    .hp-mid { color: #f5c518; }
+    .hp-low { color: #ff1744; }
+
+    .card-stats { height: 3; margin-bottom: 1; }
+    .stat-col   { width: auto; margin-right: 3; align: center top; }
+    .stat-val   { color: #e8e8ff; text-style: bold; text-align: center; }
+    .stat-key   { color: #555577; text-align: center; }
+
+    .card-move      { color: #9999bb; margin-top: 1; }
+    .move-type-badge {
+        width: auto; height: 1; padding: 0 1; margin-top: 0; text-style: bold;
+    }
+    /* move-type-badge inherits .type-* colours above */
+    """
+
+    def __init__(self, choice: dict, shortcut: str, is_selected: bool) -> None:
+        super().__init__()
+        self._choice    = choice
+        self._shortcut  = shortcut
+        if is_selected:
+            self.add_class("selected")
+        if choice.get("is_shiny"):
+            self.add_class("shiny")
+
+    def compose(self) -> ComposeResult:
+        c = self._choice
+
+        shiny_tag = "  ★ SHINY" if c.get("is_shiny") else ""
+        yield Label(f"[ {self._shortcut} ]{shiny_tag}", classes="card-shortcut")
+
+        caught = "  ✓" if c.get("is_caught") else ""
+        yield Label(f"{c['name']}{caught}", classes="card-name")
+        yield Label(f"Level  {c.get('level', '?')}", classes="card-level")
+
+        types = c.get("types", [])
+        if types:
+            with Horizontal(classes="card-types"):
+                for t in types:
+                    yield Label(t, classes=f"type-badge type-{t.lower()}")
+
+        hp_cur = c.get("hp_current")
+        hp_max = c.get("hp_max")
+        if hp_cur is not None and hp_max:
+            pct    = hp_cur / hp_max
+            filled = round(pct * 18)
+            bar    = "█" * filled + "░" * (18 - filled)
+            hp_cls = "hp-low" if pct < 0.2 else "hp-mid" if pct < 0.5 else "hp-ok"
+            yield Label(f"{bar}  {hp_cur}/{hp_max}", classes=f"card-hp {hp_cls}")
+
+        stats = c.get("stats", {})
+        if stats:
+            with Horizontal(classes="card-stats"):
+                for stat, val in list(stats.items())[:6]:
+                    with Vertical(classes="stat-col"):
+                        yield Label(str(val),          classes="stat-val")
+                        yield Label(stat[:4].upper(),  classes="stat-key")
+
+        move = c.get("move", {})
+        if move.get("name"):
+            cat_icon = {"physical": "⚔", "special": "✦", "status": "◈"}.get(
+                move.get("category", "").lower(), "·"
+            )
+            pwr = f"  PWR {move['power']}" if move.get("power") else ""
+            yield Label(f"{cat_icon}  {move['name']}{pwr}", classes="card-move")
+            if move.get("type"):
+                yield Label(
+                    move["type"],
+                    classes=f"move-type-badge type-{move['type'].lower()}",
+                )
+
+    def set_selected(self, value: bool) -> None:
+        self.set_class(value, "selected")
+
+
+class CatchPokemonPanel(Widget):
+    """Horizontal row of PokémonCards + a compact action strip below."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    CatchPokemonPanel {
+        layout: vertical;
+        height: 1fr;
+    }
+    #catch-cards { layout: horizontal; height: 1fr; }
+    #catch-strip {
+        height: 5;
+        layout: horizontal;
+        padding: 0 1;
+        border-top: solid #1e1e3a;
+        align: left middle;
+    }
+    #catch-strip ActionItem {
+        width: auto;
+        min-width: 16;
+        margin-right: 1;
+    }
+    #catch-strip ActionItem > .item-label {
+        width: auto;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Horizontal(id="catch-cards")
+        yield Horizontal(id="catch-strip")
+
+    def rebuild(self, choices: list, strip_items: list[MenuItem], selected: int) -> None:
+        shortcuts = "123456789"
+
+        cards_row = self.query_one("#catch-cards")
+        existing  = list(cards_row.query(PokemonCard))
+
+        if len(existing) == len(choices):
+            # In-place update — no flicker
+            for i, card in enumerate(existing):
+                card.set_selected(i == selected)
+        else:
+            cards_row.query(PokemonCard).remove()
+            cards_row.mount(*[
+                PokemonCard(c, shortcuts[i] if i < len(shortcuts) else "?", i == selected)
+                for i, c in enumerate(choices)
+            ])
+
+        # Strip: compact action buttons (Skip, JSON, Quit …)
+        strip_row = self.query_one("#catch-strip")
+        strip_existing = list(strip_row.query(ActionItem))
+        offset = len(choices)
+
+        if len(strip_existing) == len(strip_items):
+            for i, item in enumerate(strip_existing):
+                item.refresh_state(strip_items[i], (offset + i) == selected)
+        else:
+            strip_row.query(ActionItem).remove()
+            strip_row.mount(*[
+                ActionItem(item, (offset + i) == selected)
+                for i, item in enumerate(strip_items)
+            ])
+
+
+# ---------------------------------------------------------------------------
+# Map screen widgets
+# ---------------------------------------------------------------------------
+
+NODE_META: dict[str, tuple[str, str]] = {
+    "trainer":        ("⊗",  "#ff4455"),
+    "boss":           ("♛",  "#f5c518"),
+    "wild_encounter": ("◈",  "#44cc55"),
+    "catch_pokemon":  ("○",  "#ffaa22"),
+    "pokecenter":     ("♥",  "#ff88cc"),
+    "shop":           ("◆",  "#4488ff"),
+    "item":           ("★",  "#ffdd11"),
+    "move_tutor":     ("✦",  "#aa44ff"),
+    "mystery":        ("?",  "#00dddd"),
+    "trade":          ("⇌",  "#55ddaa"),
+    "start":          ("◉",  "#888888"),
+}
+
+
+# ---------------------------------------------------------------------------
+# MAP lattice constants
+# ---------------------------------------------------------------------------
+
+_ROW_SIZES  = [1, 2, 3, 4, 3, 4, 3, 2, 1]
+_STEP       = 4
+_ROW_OFFSET = [(4 - n) * 2 for n in _ROW_SIZES]   # [6,4,2,0,2,0,2,4,6]
+_GRID_W     = 13   # 0..12
+_GRID_H     = 17   # 9 node rows + 8 connector rows
+
+# Map node index (0-22) → (grid_y, grid_x)
+_NODE_GRID_POS: list[tuple[int, int]] = []
+for _r, _sz in enumerate(_ROW_SIZES):
+    for _c in range(_sz):
+        _NODE_GRID_POS.append((_r * 2, _ROW_OFFSET[_r] + _c * _STEP))
+
+# Map (row, col) → node index
+_ROW_COL_TO_IDX: list[list[int]] = []
+_idx = 0
+for _r, _sz in enumerate(_ROW_SIZES):
+    _row_idxs = []
+    for _c in range(_sz):
+        _row_idxs.append(_idx)
+        _idx += 1
+    _ROW_COL_TO_IDX.append(_row_idxs)
+
+
+# Pre-compute connectors: (grid_y, grid_x, char, top_node_idx, bottom_node_idx)
+def _lattice_connectors() -> list[tuple[int, int, str, int, int]]:
+    out = []
+    for r in range(len(_ROW_SIZES) - 1):
+        sc, nc = _ROW_SIZES[r], _ROW_SIZES[r + 1]
+        expanding = nc > sc
+        for c in range(sc):
+            sx = _ROW_OFFSET[r] + c * _STEP
+            if expanding:
+                targets = [c, c + 1]
+            else:
+                targets = sorted({max(0, c - 1), min(nc - 1, c)})
+            for c2 in targets:
+                dx = _ROW_OFFSET[r + 1] + c2 * _STEP
+                cx = (sx + dx) // 2
+                cy = r * 2 + 1
+                ch = "/" if dx < sx else "\\" if dx > sx else "|"
+                out.append((cy, cx, ch, _ROW_COL_TO_IDX[r][c], _ROW_COL_TO_IDX[r + 1][c2]))
+    return out
+
+_CONNECTORS = _lattice_connectors()
+
+
+# ---------------------------------------------------------------------------
+# MAP screen widgets
+# ---------------------------------------------------------------------------
+
+class TeamCard(Widget):
+    """Full-size 2×3 grid Pokémon card — fills its grid cell."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    TeamCard {
+        width: 1fr;
+        height: 1fr;
+        border: round #2a3a5a;
+        background: #0d0d20;
+        padding: 0 1;
+        layout: vertical;
+    }
+    TeamCard.hp-ok    { border: round #00e676; }
+    TeamCard.hp-mid   { border: round #f5c518; }
+    TeamCard.hp-low   { border: round #ff1744; }
+    TeamCard.swapping { border: round #00d7d7; background: #001825; }
+    TeamCard.empty    { border: round #1a1a2e; background: #090912; }
+
+    .tc-header { layout: horizontal; height: 1; align: left middle; }
+    .tc-slot   { width: 3; color: #555577; content-align: left middle; }
+    .tc-name   { width: 1fr; color: #e8e8ff; text-style: bold; content-align: left middle; }
+    .tc-level  { width: 6; color: #555577; text-align: right; content-align: right middle; }
+    .tc-types  { layout: horizontal; height: 1; }
+    .tc-type   { width: auto; height: 1; padding: 0 1; margin-right: 1; text-style: bold; }
+    .tc-hp-ok  { height: 1; color: #00e676; }
+    .tc-hp-mid { height: 1; color: #f5c518; }
+    .tc-hp-low { height: 1; color: #ff1744; }
+    .tc-move   { height: 1; color: #555577; }
+    .tc-empty  { color: #1e1e35; content-align: center middle; height: 1fr; }
+    """
+
+    def __init__(self, slot: int, p: dict | None, swap_val) -> None:
+        super().__init__()
+        self._slot = slot
+        self._p    = p
+        if p is None:
+            self.add_class("empty")
+        else:
+            hp = p.get("hp_pct", 100)
+            if swap_val == slot:
+                self.add_class("swapping")
+            elif hp > 50:
+                self.add_class("hp-ok")
+            elif hp > 20:
+                self.add_class("hp-mid")
+            else:
+                self.add_class("hp-low")
+
+    def compose(self) -> ComposeResult:
+        if self._p is None:
+            yield Label(f"{self._slot + 1}.", classes="tc-empty")
+            return
+        p      = self._p
+        hp     = p.get("hp_pct", 100)
+        hp_cur = p.get("hp_current")
+        hp_max = p.get("hp_max")
+        types  = p.get("types", [])
+        with Horizontal(classes="tc-header"):
+            yield Label(f"{self._slot + 1}.",       classes="tc-slot")
+            yield Label(p.get("name", "?"),          classes="tc-name")
+            yield Label(f"Lv{p.get('level','?')}",  classes="tc-level")
+        if types:
+            with Horizontal(classes="tc-types"):
+                for t in types:
+                    yield Label(t, classes=f"tc-type type-{t.lower()}")
+        pct    = hp / 100
+        filled = round(pct * 14)
+        bar    = "█" * filled + "░" * (14 - filled)
+        hp_str = f"{hp_cur}/{hp_max}" if hp_cur is not None else f"{hp}%"
+        hp_cls = "tc-hp-low" if hp < 20 else "tc-hp-mid" if hp < 50 else "tc-hp-ok"
+        yield Label(f"{bar}  {hp_str}", classes=hp_cls)
+        move_tier = p.get("move_tier")
+        if move_tier is not None and types:
+            yield Label(f"T{move_tier} · {types[0]}", classes="tc-move")
+
+
+class TeamGridPanel(Widget):
+    """Left panel — 2×3 grid of TeamCards filling width and height equally."""
+
+    BORDER_TITLE = "TEAM"
+    can_focus    = False
+
+    DEFAULT_CSS = """
+    TeamGridPanel {
+        width: 52;
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 1;
+        layout: vertical;
+        margin-right: 1;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    .tg-row { layout: horizontal; height: 1fr; margin-bottom: 1; }
+    .tg-row:last-of-type { margin-bottom: 0; }
+    .tg-gap { width: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        for _ in range(3):
+            yield Horizontal(classes="tg-row")
+
+    def rebuild(self, team: list, swap_val) -> None:
+        for ri, row in enumerate(self.query(".tg-row")):
+            row.query(TeamCard).remove()
+            row.query(Label).remove()
+            pair_start = ri * 2
+            cards: list = []
+            for j in range(2):
+                slot = pair_start + j
+                p    = team[slot] if slot < len(team) else None
+                cards.append(TeamCard(slot, p, swap_val))
+                if j == 0:
+                    cards.append(Label(" ", classes="tg-gap"))
+            row.mount(*cards)
+
+
+class MapGraphWidget(Static):
+    """Lattice graph — nodes + ╱╲ connectors, centred in the panel."""
+
+    BORDER_TITLE = "MAP"
+
+    DEFAULT_CSS = """
+    MapGraphWidget {
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #080816;
+        padding: 0 3;
+        content-align: center top;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    """
+
+    def rebuild(self, nodes: list[dict], current_node_idx: int | None = None) -> None:
+        completed_idxs = [i for i, n in enumerate(nodes) if n.get("state") == "completed"]
+        last_completed = max(completed_idxs) if completed_idxs else None
+
+        # Pre-compute selected node's grid position for the gold "v"
+        sel_gy, sel_gx = None, None
+        if current_node_idx is not None:
+            _idx = 0
+            for _r, _sz in enumerate(_ROW_SIZES):
+                for _c in range(_sz):
+                    if _idx == current_node_idx:
+                        sel_gy = _r * 2
+                        sel_gx = _ROW_OFFSET[_r] + _c * _STEP
+                    _idx += 1
+
+        # Build 2D grid
+        grid: list[list[tuple[str, str]]] = [
+            [(" ", "")] * _GRID_W for _ in range(_GRID_H)
+        ]
+
+        # Connectors — white if both endpoints are completed, dim otherwise
+        completed_set = {i for i, n in enumerate(nodes) if n.get("state") == "completed"}
+        for gy, gx, ch, top_idx, bot_idx in _CONNECTORS:
+            diag  = "╱" if ch == "/" else "╲"
+            style = "#e8e8ff" if (top_idx in completed_set and bot_idx in completed_set) else "#2e2e50"
+            grid[gy][gx] = (diag, style)
+
+        # "v" marker one row above the selected node
+        if sel_gy is not None and sel_gy > 0:
+            grid[sel_gy - 1][sel_gx] = ("v", "bold #f5c518")
+
+        # Nodes
+        for idx, (gy, gx) in enumerate(_NODE_GRID_POS):
+            if idx < len(nodes):
+                n     = nodes[idx]
+                state = n.get("state", "locked")
+                ntype = n.get("type", "")
+                icon, color = NODE_META.get(ntype, ("●", "#e8e8ff"))
+
+                if idx == last_completed:
+                    char, style = "X", "bold #e8e8ff"
+                elif state == "completed":
+                    char, style = icon, "#e8e8ff"
+                elif idx == current_node_idx:
+                    char, style = icon, f"bold {color}"
+                elif state == "available":
+                    char, style = icon, color
+                else:
+                    char, style = icon, f"dim {color}"
+            else:
+                char, style = "·", "#2e2e50"
+            grid[gy][gx] = (char, style)
+
+        # Render
+        result = Text()
+        for row in grid:
+            line = Text()
+            for ch, st in row:
+                line.append(ch, style=st if st else "")
+            result.append_text(line)
+            result.append("\n")
+        self.update(result)
+
+
+class NodeTile(Widget):
+    """One accessible node shown as a card below the graph."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    NodeTile {
+        width: 1fr;
+        height: 5;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        layout: horizontal;
+        align: left middle;
+        padding: 0 2;
+        margin-right: 1;
+    }
+    NodeTile.selected { background: #16163a; }
+    .nt-key    { width: 5; color: #f5c518; text-style: bold; content-align: center middle; }
+    .nt-icon   { width: 4; content-align: center middle; }
+    .nt-label  { width: 1fr; color: #e8e8ff; text-style: bold; content-align: left middle; }
+    .nt-detail { width: auto; color: #555577; content-align: right middle; }
+    """
+
+    def __init__(self, item: MenuItem, node: dict, is_selected: bool) -> None:
+        super().__init__()
+        self._item        = item
+        self._node        = node
+        self._is_selected = is_selected
+        _, self._color    = NODE_META.get(node.get("type", ""), ("·", "#555577"))
+        if is_selected:
+            self.add_class("selected")
+
+    def on_mount(self) -> None:
+        self.styles.border = ("round", self._color)
+
+    def compose(self) -> ComposeResult:
+        ntype     = self._node.get("type", "")
+        icon, _   = NODE_META.get(ntype, ("·", "#555577"))
+        label     = NODE_TYPE_LABEL.get(ntype, ntype.replace("_", " ").title())
+        poke_type = self._node.get("poke_type", "")
+        yield Label(self._item.shortcut,              classes="nt-key")
+        yield Label(icon,                             classes="nt-icon")
+        yield Label(label,                            classes="nt-label")
+        if poke_type:
+            yield Label(f"({poke_type})",             classes="nt-detail")
+
+    def set_selected(self, value: bool) -> None:
+        self._is_selected = value
+        self.set_class(value, "selected")
+        self.styles.border = ("round", self._color if value else "#2a2a4a")
+
+
+class SingleNodeDisplay(Widget):
+    """One accessible node at a time, full-width, ◀▶ to cycle."""
+
+    BORDER_TITLE = "CHOOSE"
+    can_focus    = False
+
+    DEFAULT_CSS = """
+    SingleNodeDisplay {
+        height: 5;
+        layout: horizontal;
+        align: left middle;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 2;
+        margin-top: 1;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    .sn-nav    { width: 4; color: #555577; text-style: bold; content-align: center middle; }
+    .sn-key    { width: 5; color: #f5c518; text-style: bold; content-align: center middle; }
+    .sn-icon   { width: 4; content-align: center middle; }
+    .sn-label  { width: 1fr; color: #e8e8ff; text-style: bold; content-align: left middle; }
+    .sn-detail { width: auto; color: #555577; content-align: right middle; }
+    .sn-count  { width: 8; color: #555577; content-align: right middle; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("◀", classes="sn-nav",    id="sn-prev")
+        yield Label("",  classes="sn-key",    id="sn-key")
+        yield Label("",  classes="sn-icon",   id="sn-icon")
+        yield Label("",  classes="sn-label",  id="sn-label")
+        yield Label("",  classes="sn-detail", id="sn-detail")
+        yield Label("",  classes="sn-count",  id="sn-count")
+        yield Label("▶", classes="sn-nav",    id="sn-next")
+
+    def rebuild(self, node_items: list[MenuItem], nodes: list[dict], idx: int) -> None:
+        if not node_items:
+            for wid in ("sn-key", "sn-icon", "sn-label", "sn-detail", "sn-count"):
+                try: self.query_one(f"#{wid}", Label).update("")
+                except Exception: pass
+            self.styles.border = ("round", "#2a2a4a")
+            return
+        i         = idx % len(node_items)
+        item      = node_items[i]
+        node      = nodes[i] if i < len(nodes) else {}
+        ntype     = node.get("type", "")
+        icon, color = NODE_META.get(ntype, ("●", "#e8e8ff"))
+        label     = NODE_TYPE_LABEL.get(ntype, ntype.replace("_", " ").title())
+        poke_type = node.get("poke_type", "")
+        try:
+            self.query_one("#sn-key",    Label).update(item.shortcut)
+            self.query_one("#sn-icon",   Label).update(icon)
+            self.query_one("#sn-label",  Label).update(label)
+            self.query_one("#sn-detail", Label).update(f"({poke_type})" if poke_type else "")
+            self.query_one("#sn-count",  Label).update(f"{i+1}/{len(node_items)}")
+            self.styles.border = ("round", color)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Action menu widgets
+# ---------------------------------------------------------------------------
+
+class ActionItem(Widget):
+    """A single menu entry rendered as a card block."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    ActionItem {
+        height: 3;
+        layout: horizontal;
+        align: left middle;
+        padding: 0 1;
+        border: round #3a3a5a;
+        background: #141428;
+        margin-bottom: 0;
+    }
+    ActionItem.selected {
+        border: round #f5c518;
+        background: #1e1e38;
+    }
+    ActionItem.disabled {
+        border: round #222235;
+        background: #0f0f20;
+    }
+
+    ActionItem > .shortcut {
+        width: 5;
+        content-align: center middle;
+        color: #00d7d7;
+    }
+    ActionItem.selected > .shortcut {
+        color: #f5c518;
+        text-style: bold;
+    }
+    ActionItem.disabled > .shortcut {
+        color: #333355;
+    }
+
+    ActionItem > .item-label {
+        width: 1fr;
+        content-align: left middle;
+        color: #9999bb;
+    }
+    ActionItem.selected > .item-label {
+        color: #e8e8ff;
+        text-style: bold;
+    }
+    ActionItem.disabled > .item-label {
+        color: #444455;
+        text-style: strike dim;
+    }
+
+    ActionItem > .arrow {
+        width: 3;
+        content-align: center middle;
+        color: #f5c518;
+    }
+    """
+
+    def __init__(self, item: MenuItem, is_selected: bool) -> None:
+        super().__init__()
+        self._item        = item
+        self._is_selected = is_selected
+        if is_selected:
+            self.add_class("selected")
+        if not item.enabled:
+            self.add_class("disabled")
+
+    def compose(self) -> ComposeResult:
+        yield Label(self._item.shortcut,              classes="shortcut")
+        yield Label(self._item.label,                 classes="item-label")
+        yield Label("❯" if self._is_selected else " ", classes="arrow")
+
+    def refresh_state(self, item: MenuItem, is_selected: bool) -> None:
+        """Update visual state without remounting — no flicker."""
+        self._item        = item
+        self._is_selected = is_selected
+        self.set_class(is_selected,     "selected")
+        self.set_class(not item.enabled, "disabled")
+        self.query_one(".shortcut",   Label).update(item.shortcut)
+        self.query_one(".item-label", Label).update(item.label)
+        self.query_one(".arrow",      Label).update("❯" if is_selected else " ")
+
+
+class ActionMenu(Widget):
+    """Vertical stack of ActionItem cards."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    ActionMenu {
+        height: 1fr;
+        layout: vertical;
+        overflow-y: auto;
+        background: transparent;
+    }
+    """
+
+    def rebuild(self, items: list[MenuItem], selected: int) -> None:
+        current = list(self.query(ActionItem))
+        if len(current) == len(items):
+            # Same number of items — update in place, zero DOM changes
+            for i, (widget, item) in enumerate(zip(current, items)):
+                widget.refresh_state(item, i == selected)
+        else:
+            # Screen changed — full remount
+            self.query(ActionItem).remove()
+            self.mount(*[ActionItem(item, i == selected) for i, item in enumerate(items)])
+
+
+# ---------------------------------------------------------------------------
 # Textual screens
 # ---------------------------------------------------------------------------
 
 class JsonScreen(Screen):
-    """Full-screen JSON viewer with scroll support."""
+    """Scrollable JSON viewer."""
+
+    BINDINGS = [Binding("escape", "close_json", "Close")]
+
+    DEFAULT_CSS = """
+    JsonScreen {
+        background: #0d0d1a;
+        align: center middle;
+    }
+    #json-outer {
+        width: 92%;
+        height: 92%;
+        border: double #f5c518;
+        background: #0d0d1a;
+        layout: vertical;
+    }
+    #json-title {
+        height: 1;
+        background: #12121f;
+        color: #f5c518;
+        text-align: center;
+        text-style: bold;
+        content-align: center middle;
+        border-bottom: solid #2a2a4a;
+        padding: 0 2;
+    }
+    #json-scroll {
+        height: 1fr;
+        overflow-y: scroll;
+        background: #0d0d1a;
+    }
+    #json-content {
+        padding: 1 2;
+    }
+    """
 
     def __init__(self, json_text: str) -> None:
         super().__init__()
         self.json_text = json_text
-        self.lines = json_text.splitlines()
-        self.offset = 0
 
     def compose(self) -> ComposeResult:
-        yield Static(id="json_display")
+        with Vertical(id="json-outer"):
+            yield Label(
+                "RAW JSON  ·  ↑↓ scroll  ·  any other key closes",
+                id="json-title",
+            )
+            with ScrollableContainer(id="json-scroll"):
+                yield Static(
+                    Syntax(
+                        self.json_text, "json",
+                        theme="monokai", line_numbers=True,
+                    ),
+                    id="json-content",
+                )
 
-    def on_mount(self) -> None:
-        self._update_display()
-
-    def _make_renderable(self):
-        try:
-            term_h = max(5, self.app.size.height - 6)
-        except Exception:
-            term_h = max(5, os.get_terminal_size().lines - 6)
-        visible = self.lines[self.offset:self.offset + term_h]
-        syntax = Syntax(
-            "\n".join(visible), "json",
-            theme="monokai", line_numbers=True, start_line=self.offset + 1
-        )
-        pct = f"{self.offset + 1}-{min(self.offset + term_h, len(self.lines))}/{len(self.lines)}"
-        return Panel(
-            syntax,
-            title="[bold yellow]RAW JSON[/] [dim](↑↓ scroll · any other key to go back)[/]",
-            subtitle=f"[dim]{pct}[/]",
-            box=box.DOUBLE_EDGE,
-        )
-
-    def _update_display(self) -> None:
-        self.query_one("#json_display", Static).update(self._make_renderable())
+    def action_close_json(self) -> None:
+        self.app.pop_screen()
 
     def on_key(self, event) -> None:
-        key = event.key
-        if key == "up":
-            self.offset = max(0, self.offset - 1)
-            self._update_display()
-        elif key == "down":
-            try:
-                term_h = max(5, self.app.size.height - 6)
-            except Exception:
-                term_h = max(5, os.get_terminal_size().lines - 6)
-            self.offset = min(max(0, len(self.lines) - term_h), self.offset + 1)
-            self._update_display()
-        else:
+        if event.key not in ("up", "down", "pageup", "pagedown", "escape"):
             self.app.pop_screen()
 
 
 class PokedexScreen(Screen):
-    """Full-screen Pokédex overlay."""
+    """Full-screen Pokédex overlay with search and route-browse modes."""
+
+    BINDINGS = [
+        Binding("escape", "close_dex",    "Close",       priority=True),
+        Binding("tab",    "toggle_mode",  "Switch Mode", priority=True),
+        Binding("up",     "row_up",       "",            show=False, priority=True),
+        Binding("down",   "row_down",     "",            show=False, priority=True),
+        Binding("left",   "prev_route",   "◀",           show=False, priority=True),
+        Binding("right",  "next_route",   "▶",           show=False, priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    PokedexScreen {
+        background: #0d0d1a;
+        layout: vertical;
+    }
+    #dex-header {
+        height: 1;
+        background: #12121f;
+        color: #f5c518;
+        text-style: bold;
+        text-align: center;
+        content-align: center middle;
+        border-bottom: solid #2a2a4a;
+    }
+    #dex-toolbar {
+        height: 3;
+        background: #0f0f1f;
+        border-bottom: solid #1e1e3a;
+        padding: 0 2;
+        align: left middle;
+    }
+    #dex-route-bar {
+        height: 3;
+        background: #0f0f1f;
+        border-bottom: solid #1e1e3a;
+        align: center middle;
+        display: none;
+    }
+    #dex-search {
+        width: 28;
+        background: #0d0d1a;
+        color: #00d7d7;
+        border: round #2a2a4a;
+    }
+    #dex-count {
+        color: #555577;
+        margin-left: 2;
+        width: auto;
+        content-align: left middle;
+    }
+    #dex-hint {
+        color: #2a2a4a;
+        width: 1fr;
+        text-align: right;
+        content-align: right middle;
+        padding-right: 1;
+    }
+    #dex-route-name {
+        color: #00d7d7;
+        text-style: bold;
+        width: 1fr;
+        text-align: center;
+        content-align: center middle;
+    }
+    .dex-nav-arrow {
+        color: #555577;
+        width: 4;
+        content-align: center middle;
+    }
+    #dex-table {
+        height: 1fr;
+        background: #12121f;
+    }
+    DataTable > .datatable--header {
+        background: #12121f;
+        color: #f5c518;
+        text-style: bold;
+    }
+    DataTable > .datatable--cursor {
+        background: #1e1e35;
+        color: #e8e8ff;
+    }
+    DataTable {
+        background: #12121f;
+        color: #e8e8ff;
+    }
+    """
 
     ROUTE_ORDER = [
         "Route 1", "Mt Moon", "Nugget Bridge", "Rock Tunnel",
         "Silph Co", "Safari Zone", "Seafoam Island", "Viridian City", "Victory Road",
     ]
     FLOOR_ORDER = ["Early", "Early-Middle", "Middle", "Middle-Late", "Late"]
-    FLOOR_CODES = {
-        "Early":        "R1M1, R1M2",
-        "Early-Middle": "R1M3, R2M1",
-        "Middle":       "R2M1, R2M2",
-        "Middle-Late":  "R2M2, R2M3, R3M1",
-        "Late":         "R3M2, R3M3",
-    }
 
     def __init__(self, app) -> None:
         super().__init__()
-        self._app = app
-        self.mode = "search"
-        self.query = ""
-        self.scroll = 0
+        self._app      = app
+        self.mode      = "search"
         self.route_idx = 0
-        self.route_scroll = 0
-        self.data: list = []
-        self.route_map: dict = {}
+        self.data:       list = []
+        self.route_map:  dict = {}
         self.all_routes: list = []
 
     def compose(self) -> ComposeResult:
-        yield Static(id="dex_display")
+        yield Label(
+            "POKÉDEX  ·  Tab=switch mode  ·  ↑↓=scroll  ·  Esc=close",
+            id="dex-header",
+        )
+        with Horizontal(id="dex-toolbar"):
+            yield Input(placeholder="type to filter by name…", id="dex-search")
+            yield Label("", id="dex-count")
+            yield Label("Tab → route mode", id="dex-hint")
+        with Horizontal(id="dex-route-bar"):
+            yield Label("◀", classes="dex-nav-arrow")
+            yield Label("", id="dex-route-name")
+            yield Label("▶", classes="dex-nav-arrow")
+        yield DataTable(id="dex-table")
 
     def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("", "Name", "Types", "Normal Routes", "Tower Floors")
+        table.cursor_type = "row"
+        table.zebra_stripes = True
+        self.query_one(Input).focus()
         self._load_data()
-        self.set_interval(0.5, self._blink)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self.mode == "search":
+            self._refresh_table()
+
+    # ── data loading ──────────────────────────────────────────────────────
 
     @work(thread=True)
     def _load_data(self) -> None:
@@ -1027,171 +1778,106 @@ class PokedexScreen(Screen):
         def _route_sort_key(name: str) -> tuple:
             if name.startswith("Tower: "):
                 floor = name[len("Tower: "):]
-                idx = self.FLOOR_ORDER.index(floor) if floor in self.FLOOR_ORDER else len(self.FLOOR_ORDER)
+                idx   = self.FLOOR_ORDER.index(floor) if floor in self.FLOOR_ORDER else len(self.FLOOR_ORDER)
                 return (1, idx)
             idx = self.ROUTE_ORDER.index(name) if name in self.ROUTE_ORDER else len(self.ROUTE_ORDER)
             return (0, idx)
 
         all_routes = sorted(route_map.keys(), key=_route_sort_key)
-        self.call_from_thread(self._apply_data, data, route_map, all_routes)
+        self.app.call_from_thread(self._apply_data, data, route_map, all_routes)
 
     def _apply_data(self, data, route_map, all_routes) -> None:
-        self.data = data
-        self.route_map = route_map
+        self.data       = data
+        self.route_map  = route_map
         self.all_routes = all_routes
-        self._update_display()
+        self._refresh_table()
 
-    def _blink(self) -> None:
-        self.query_one("#dex_display", Static).update(self._make_panel())
+    # ── table refresh ─────────────────────────────────────────────────────
 
     def _filtered(self) -> list:
-        q = self.query.lower()
+        try:
+            q = self.query_one(Input).value.lower()
+        except Exception:
+            q = ""
         if q:
             return [s for s in self.data if s["name"].lower().startswith(q)]
         return self.data
 
-    @staticmethod
-    def _fmt_floors(floors: list) -> str:
-        if not floors:
-            return "—"
-        return ", ".join(floors)
-
-    def _make_panel(self):
+    def _refresh_table(self) -> None:
+        table   = self.query_one(DataTable)
+        table.clear()
+        results = self._filtered()
+        caught  = sum(1 for s in results if s["caught"])
         try:
-            term_w = self.app.size.width
-            term_h = self.app.size.height
+            self.query_one("#dex-count", Label).update(
+                f"[#00e676]{caught}[/][#555577]/{len(results)}[/]"
+            )
         except Exception:
-            sz = os.get_terminal_size()
-            term_w = sz.columns
-            term_h = sz.lines
-        panel_w = min(160, max(60, term_w - 10))
-        term_h = max(5, term_h - 4)
-        visible_rows = max(1, term_h - 6)
+            pass
+        for s in results:
+            check  = Text("✓ ", style="#00e676") if s["caught"] else Text("· ", style="#555577")
+            name   = Text(s["name"], style="bold #e8e8ff" if s["caught"] else "#777799")
+            types  = Text("/".join(s["types"]) if s["types"] else "—", style="#555577")
+            routes = ", ".join(s["routes"]) if s["routes"] else "—"
+            floors = ", ".join(s["floors"]) if s["floors"] else "—"
+            table.add_row(check, name, types, routes, floors, key=str(s["id"]))
 
-        body = Table.grid(padding=(0, 1))
-        body.add_column(no_wrap=True, overflow="fold")
-
-        if self.mode == "search":
-            cursor = "_" if int(time.monotonic() * 2) % 2 == 0 else " "
-            results = self._filtered()
-            total = len(results)
-            rows_per = 2
-            visible_pokes = max(1, visible_rows // rows_per)
-            max_scroll = max(0, total - visible_pokes)
-            clamped = min(self.scroll, max_scroll)
-            page_items = results[clamped:clamped + visible_pokes]
-
-            body.add_row(Text.assemble(
-                ("  type to filter · ↑↓ scroll · Tab=route mode · ESC=exit", "dim"),
-                (f"   [{clamped+1}-{min(clamped+visible_pokes,total)}/{total}]", "dim"),
-            ))
-            body.add_row(Text.assemble(
-                ("  search: ", "dim"),
-                (self.query + cursor, "bold cyan"),
-            ))
-            body.add_row(Text(""))
-
-            for s in page_items:
-                check      = "✓" if s["caught"] else "·"
-                c_style    = "bold green" if s["caught"] else "dim"
-                types      = "/".join(s["types"]) if s["types"] else ""
-                routes_str = ", ".join(s["routes"]) if s["routes"] else "—"
-                floors_str = self._fmt_floors(s["floors"])
-                indent = "     " + " " * 20 + "  " + " " * 16
-                body.add_row(Text.assemble(
-                    (f" {check} ", c_style),
-                    (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
-                    (f"  {types:<16}", "dim"),
-                    ("  Normal: ", "dim"),
-                    (routes_str, "dim"),
-                ))
-                body.add_row(Text.assemble(
-                    (indent, ""),
-                    ("Tower:  ", "dim"),
-                    (floors_str, "dim"),
-                ))
-
-            panel_title = Text("  POKÉDEX", style="bold yellow")
-
-        else:
-            panel_title = Text("  POKÉDEX", style="bold yellow")
-            if not self.all_routes:
-                body.add_row(Text("No route data available.", style="dim"))
-            else:
-                ri = self.route_idx % len(self.all_routes)
-                route_name = self.all_routes[ri]
-                pokes = self.route_map.get(route_name, [])
-                total = len(pokes)
-                max_scroll = max(0, total - visible_rows)
-                clamped_r = min(self.route_scroll, max_scroll)
-                page_items = pokes[clamped_r:clamped_r + visible_rows]
-
-                body.add_row(Text.assemble(
-                    ("  ◀▶=route · ↑↓ scroll · Tab=search mode · ESC=exit", "dim"),
-                    (f"   [{clamped_r+1}-{min(clamped_r+visible_rows,total)}/{total}]", "dim"),
-                ))
-                body.add_row(Text.assemble(
-                    ("  ◀  ", "dim"),
-                    (route_name, "bold cyan"),
-                    ("  ▶", "dim"),
-                ))
-                body.add_row(Text(""))
-
-                for s in page_items:
-                    check   = "✓" if s["caught"] else "·"
-                    c_style = "bold green" if s["caught"] else "dim"
-                    types   = "/".join(s["types"]) if s["types"] else ""
-                    body.add_row(Text.assemble(
-                        (f" {check} ", c_style),
-                        (f"{s['name']:<20}", "white" if s["caught"] else "dim white"),
-                        (f"  {types}", "dim"),
-                    ))
-
-        return Align.center(Panel(
-            body,
-            title=panel_title,
-            box=box.DOUBLE_EDGE,
-            width=panel_w,
-        ))
-
-    def _update_display(self) -> None:
-        self.query_one("#dex_display", Static).update(self._make_panel())
-
-    def on_key(self, event) -> None:
-        key = event.key
-        if key == "escape":
-            self.app.pop_screen()
+    def _refresh_route_view(self) -> None:
+        if not self.all_routes:
             return
+        ri         = self.route_idx % len(self.all_routes)
+        route_name = self.all_routes[ri]
+        try:
+            self.query_one("#dex-route-name", Label).update(route_name)
+        except Exception:
+            pass
+        table = self.query_one(DataTable)
+        table.clear()
+        for s in self.route_map.get(route_name, []):
+            check = Text("✓ ", style="#00e676") if s["caught"] else Text("· ", style="#555577")
+            name  = Text(s["name"], style="bold #e8e8ff" if s["caught"] else "#777799")
+            types = Text("/".join(s["types"]) if s["types"] else "—", style="#555577")
+            table.add_row(check, name, types, "", "", key=str(s["id"]))
 
+    # ── actions ───────────────────────────────────────────────────────────
+
+    def action_close_dex(self) -> None:
+        self.app.pop_screen()
+
+    def action_toggle_mode(self) -> None:
+        self.mode = "route" if self.mode == "search" else "search"
+        toolbar   = self.query_one("#dex-toolbar")
+        route_bar = self.query_one("#dex-route-bar")
         if self.mode == "search":
-            if key == "up":
-                self.scroll = max(0, self.scroll - 1)
-            elif key == "down":
-                self.scroll += 1
-            elif key == "backspace":
-                self.query = self.query[:-1]
-                self.scroll = 0
-            elif key == "tab":
-                self.mode = "route"
-                self.route_scroll = 0
-            elif len(key) == 1 and key.isprintable():
-                self.query += key
-                self.scroll = 0
+            toolbar.display   = True
+            route_bar.display = False
+            self.query_one(Input).focus()
+            self._refresh_table()
         else:
-            if key == "left":
-                self.route_idx = (self.route_idx - 1) % max(1, len(self.all_routes))
-                self.route_scroll = 0
-            elif key == "right":
-                self.route_idx = (self.route_idx + 1) % max(1, len(self.all_routes))
-                self.route_scroll = 0
-            elif key == "up":
-                self.route_scroll = max(0, self.route_scroll - 1)
-            elif key == "down":
-                self.route_scroll += 1
-            elif key == "tab":
-                self.mode = "search"
+            toolbar.display   = False
+            route_bar.display = True
+            self.query_one(DataTable).focus()
+            self._refresh_route_view()
 
-        self._update_display()
+    def action_row_up(self) -> None:
+        table = self.query_one(DataTable)
+        if table.row_count and table.cursor_row > 0:
+            table.move_cursor(row=table.cursor_row - 1)
+
+    def action_row_down(self) -> None:
+        table = self.query_one(DataTable)
+        if table.row_count and table.cursor_row < table.row_count - 1:
+            table.move_cursor(row=table.cursor_row + 1)
+
+    def action_prev_route(self) -> None:
+        if self.mode == "route" and self.all_routes:
+            self.route_idx = (self.route_idx - 1) % len(self.all_routes)
+            self._refresh_route_view()
+
+    def action_next_route(self) -> None:
+        if self.mode == "route" and self.all_routes:
+            self.route_idx = (self.route_idx + 1) % len(self.all_routes)
+            self._refresh_route_view()
 
 
 # ---------------------------------------------------------------------------
@@ -1200,53 +1886,151 @@ class PokedexScreen(Screen):
 
 class PokelikeApp(App):
     """
-    All Playwright operations run in a single dedicated browser thread to satisfy
-    greenlet's requirement that sync-playwright objects are used from the thread
-    that created them. The browser thread owns the refresh loop and processes
-    action tasks submitted via _task_queue. Textual runs its asyncio loop in the
-    main thread, receiving UI updates via call_from_thread.
+    All Playwright operations run in a single dedicated browser thread.
+    Textual runs its asyncio loop in the main thread, receiving UI updates
+    via call_from_thread.
+    """
+
+    TITLE = "POKELIKE  automation"
+
+    BINDINGS = [
+        Binding("q,escape", "quit_app", "Quit", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    /* ── Global ─────────────────────────────────────────────── */
+    Screen {
+        background: #0d0d1a;
+    }
+    Header {
+        background: #0a0a18;
+        color: #f5c518;
+        text-style: bold;
+        height: 1;
+    }
+    Footer {
+        background: #0a0a18;
+        color: #2a2a4a;
+        height: 1;
+    }
+
+    /* ── Layout containers ──────────────────────────────────── */
+    #default-layout {
+        height: 1fr;
+        padding: 0 1;
+    }
+    #menu-panel {
+        width: 1fr;
+        border: round #2a2a4a;
+        background: #12121f;
+        padding: 1 2;
+        height: 1fr;
+    }
+    #menu-panel-title {
+        color: #555577;
+        text-style: bold;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #starter-panel {
+        display: none;
+    }
+    #map-layout {
+        height: 1fr;
+        padding: 0 1 0 1;
+        layout: vertical;
+    }
+    #map-inner { height: 1fr; }
+    #map-center {
+        width: 1fr;
+        layout: vertical;
+        padding: 0 1;
+    }
+    #map-strip {
+        height: 5;
+        layout: horizontal;
+        border-top: solid #1e1e3a;
+        align: left middle;
+        overflow-x: auto;
+    }
+    #map-strip ActionItem {
+        width: auto;
+        min-width: 14;
+        margin-right: 1;
+    }
+    #map-strip ActionItem > .item-label { width: auto; }
+
+    /* ── Catch screen ───────────────────────────────────────── */
+    #catch-layout {
+        height: 1fr;
+        padding: 0 1 1 1;
+    }
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self.page = None
-        self.game_screen = ScreenType.UNKNOWN
-        self.state: dict = {}
-        self.selected = 0
+        self.page            = None
+        self.game_screen     = ScreenType.UNKNOWN
+        self.state: dict     = {}
+        self.selected        = 0
         self.selected_starter = 0
-        self.swap_source = [None]
-        self.bag_mode = [False]
-        self.flash_until = 0.0
+        self.swap_source     = [None]
+        self.bag_mode        = [False]
+        self.flash_until     = 0.0
         self._items: list[MenuItem] = []
-        # Browser thread communication
         self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
-        self._stop = threading.Event()
+        self._stop           = threading.Event()
+        self._ui_ready        = False
+        self._last_items_key  = None
+        self._last_team_key   = None
+        self._last_graph_key  = None
+        self.map_carousel_idx = 0
 
     def compose(self) -> ComposeResult:
-        yield Static("[dim]Connecting to Chrome…[/]", id="display")
+        yield Header()
+        yield StatusBar(id="status-bar")
+        with Horizontal(id="default-layout"):
+            with Vertical(id="menu-panel"):
+                yield Label("ACTIONS", id="menu-panel-title")
+                yield ActionMenu(id="menu-actions")
+            yield StarterPickerWidget(id="starter-panel")
+        with Vertical(id="map-layout"):
+            with Horizontal(id="map-inner"):
+                yield TeamGridPanel(id="map-team-grid")
+                with Vertical(id="map-center"):
+                    yield MapGraphWidget(id="map-graph")
+                    yield SingleNodeDisplay(id="map-node-display")
+                yield BagPanel(id="bag-panel")
+            with Horizontal(id="map-strip"):
+                pass
+        with Horizontal(id="catch-layout"):
+            yield CatchPokemonPanel(id="catch-panel")
+        yield Footer()
 
     def on_mount(self) -> None:
+        self._ui_ready = True
+        self.query_one("#map-layout").display   = False
+        self.query_one("#catch-layout").display = False
         t = threading.Thread(target=self._browser_loop, daemon=True)
         t.start()
 
     def on_unmount(self) -> None:
         self._stop.set()
 
+    def action_quit_app(self) -> None:
+        self.exit()
+
     # ------------------------------------------------------------------
-    # Browser thread — owns ALL Playwright calls
+    # Browser thread
     # ------------------------------------------------------------------
 
     def _browser_loop(self) -> None:
         try:
             with connect_to_chrome() as page:
                 self.page = page
-                self.call_from_thread(
-                    self.query_one("#display", Static).update,
-                    f"[green]Connected[/] {page.url}"
-                )
+                self.call_from_thread(self._on_connected, page.url)
                 last_refresh = 0.0
                 while not self._stop.is_set():
-                    # Process pending actions first
                     while True:
                         try:
                             task, result_holder, done_event = self._task_queue.get_nowait()
@@ -1258,15 +2042,14 @@ class PokelikeApp(App):
                         except queue.Empty:
                             break
 
-                    # Auto-refresh
                     now = time.monotonic()
                     if now - last_refresh >= AUTO_REFRESH_INTERVAL:
                         last_refresh = now
                         try:
-                            prev = self.game_screen
+                            prev       = self.game_screen
                             new_screen = detect(page)
-                            p = PARSER_MAP.get(new_screen)
-                            new_state = p.parse(page) if p else _unknown_state(page, new_screen)
+                            p          = PARSER_MAP.get(new_screen)
+                            new_state  = p.parse(page) if p else _unknown_state(page, new_screen)
                             self.call_from_thread(self._apply_state, prev, new_screen, new_state)
                         except Exception:
                             pass
@@ -1275,15 +2058,31 @@ class PokelikeApp(App):
 
         except Exception as e:
             try:
-                self.call_from_thread(
-                    self.query_one("#display", Static).update,
-                    f"[red][Error][/] {e}"
-                )
+                self.call_from_thread(self._on_connect_error, e)
             except Exception:
                 pass
 
+    def _on_connected(self, url: str) -> None:
+        if not self._ui_ready:
+            return
+        try:
+            self.query_one(StatusBar).update(
+                Text.from_markup(f" [bold #00e676]Connected[/]  [#555577]{url}[/]")
+            )
+        except Exception:
+            pass
+
+    def _on_connect_error(self, e: Exception) -> None:
+        if not self._ui_ready:
+            return
+        try:
+            self.query_one(StatusBar).update(
+                Text.from_markup(f" [bold #ff1744]Connection error:[/]  [#e8e8ff]{e}[/]")
+            )
+        except Exception:
+            pass
+
     def run_in_browser(self, fn) -> str:
-        """Submit fn to the browser thread and block until it completes."""
         result_holder = [None]
         done = threading.Event()
         self._task_queue.put((fn, result_holder, done))
@@ -1291,21 +2090,21 @@ class PokelikeApp(App):
         return result_holder[0] or ""
 
     # ------------------------------------------------------------------
-    # UI updates (run on Textual main thread via call_from_thread)
+    # UI updates (main thread)
     # ------------------------------------------------------------------
 
     def _apply_state(self, prev: ScreenType, new_screen: ScreenType, new_state: dict) -> None:
-        changed = new_screen != prev
+        changed          = new_screen != prev
         self.game_screen = new_screen
-        self.state = new_state
+        self.state       = new_state
         self.flash_until = time.monotonic() + 1.2
         if changed:
             self.selected = 0
+            self.map_carousel_idx = 0
             self._handle_screen_change_ui(prev, new_screen)
         self._rebuild()
 
     def _handle_screen_change_ui(self, prev: ScreenType, new: ScreenType) -> None:
-        """Queue auto-actions for screen transitions (browser thread)."""
         page = self.page
         if new == ScreenType.STARTER_SELECT:
             idx = self.selected_starter
@@ -1320,21 +2119,134 @@ class PokelikeApp(App):
             self._task_queue.put((lambda: _click_center(page), [None], threading.Event()))
 
     def _rebuild(self) -> None:
-        if self.page is None:
+        if not self._ui_ready or self.page is None:
             return
         self._items = self._build_current_items()
         if self._items:
             self.selected = max(0, min(self.selected, len(self._items) - 1))
+
         flash = time.monotonic() < self.flash_until
-        renderable = render(
-            self.game_screen, self.state, self._items, self.selected,
-            flash, self.selected_starter, self.swap_source, self.bag_mode,
-        )
-        self.query_one("#display", Static).update(renderable)
+
+        try:
+            self.query_one(StatusBar).update_status(self.game_screen, self.state, flash)
+        except Exception:
+            pass
+
+        is_map   = self.game_screen == ScreenType.MAP
+        is_catch = self.game_screen == ScreenType.CATCH_POKEMON
+        try:
+            self.query_one("#default-layout").display = not is_map and not is_catch
+            self.query_one("#map-layout").display     = is_map
+            self.query_one("#catch-layout").display   = is_catch
+        except Exception:
+            pass
+
+        if is_map:
+            swap_val   = self.swap_source[0]
+            team       = self.state.get("team", [])
+            nodes_all  = self.state.get("nodes", [])
+            accessible = [n for n in nodes_all if n["accessible"]]
+            n_nodes    = len(accessible)
+            is_special = swap_val is not None or self.bag_mode[0]
+
+            # Team grid
+            team_key = tuple(
+                f"{p.get('name')}:{p.get('hp_pct')}:{p.get('hp_current')}:{swap_val}"
+                for p in team
+            )
+            if team_key != self._last_team_key:
+                self._last_team_key = team_key
+                try:
+                    self.query_one(TeamGridPanel).rebuild(team, swap_val)
+                except Exception:
+                    pass
+
+            # Bag
+            try:
+                self.query_one(BagPanel).update_bag(self.state.get("bag", []))
+            except Exception:
+                pass
+
+            # Graph
+            acc_indices = [i for i, n in enumerate(nodes_all) if n["accessible"]]
+            carousel_sel = self.map_carousel_idx % max(1, len(acc_indices))
+            current_node_idx = acc_indices[carousel_sel] if acc_indices else None
+            graph_key = (tuple(n.get("state", "") for n in nodes_all), current_node_idx)
+            if graph_key != self._last_graph_key:
+                self._last_graph_key = graph_key
+                try:
+                    self.query_one(MapGraphWidget).rebuild(nodes_all, current_node_idx)
+                except Exception:
+                    pass
+
+            # Single node display (normal mode only)
+            if not is_special:
+                self.map_carousel_idx = self.map_carousel_idx % max(1, n_nodes)
+                self.selected = self.map_carousel_idx
+                node_items = self._items[:n_nodes]
+                try:
+                    self.query_one(SingleNodeDisplay).rebuild(node_items, accessible, self.map_carousel_idx)
+                except Exception:
+                    pass
+
+        elif is_catch:
+            items_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected)
+            if items_key != self._last_items_key:
+                self._last_items_key = items_key
+                choices    = self.state.get("choices", [])
+                strip_items = self._items[len(choices):]
+                try:
+                    self.query_one(CatchPokemonPanel).rebuild(choices, strip_items, self.selected)
+                except Exception:
+                    pass
+            return
+
+        else:
+            try:
+                starter = self.query_one(StarterPickerWidget)
+                if self.game_screen == ScreenType.MAIN_MENU:
+                    starter.display = True
+                    gen = self.state.get("selected_gen") or "I"
+                    starter.update_starters(get_starters(gen), self.selected_starter)
+                else:
+                    starter.display = False
+            except Exception:
+                pass
+
+        # Rebuild menus when list or selection changes
+        items_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected)
+        if items_key != self._last_items_key:
+            self._last_items_key = items_key
+            if is_map:
+                # Strip: util items (everything after node items)
+                if is_special:
+                    util_items = self._items   # bag/swap: all items in strip
+                    n_nodes    = 0
+                else:
+                    util_items = self._items[n_nodes:]
+                try:
+                    strip = self.query_one("#map-strip", Horizontal)
+                    existing = list(strip.query(ActionItem))
+                    if len(existing) == len(util_items):
+                        for i, w in enumerate(existing):
+                            w.refresh_state(util_items[i], i == (self.selected - n_nodes))
+                    else:
+                        strip.query(ActionItem).remove()
+                        strip.mount(*[
+                            ActionItem(item, i == (self.selected - n_nodes))
+                            for i, item in enumerate(util_items)
+                        ])
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.query_one("#menu-actions", ActionMenu).rebuild(self._items, self.selected)
+                except Exception:
+                    pass
 
     def _build_current_items(self) -> list[MenuItem]:
         def noop_refresh():
-            return ""  # refresh happens automatically in browser loop
+            return ""
 
         if self.game_screen == ScreenType.MAP:
             return build_map_items(
@@ -1342,7 +2254,7 @@ class PokelikeApp(App):
                 self.selected_starter, self.swap_source, self.bag_mode,
             )
         self.swap_source[0] = None
-        self.bag_mode[0] = False
+        self.bag_mode[0]    = False
         builder = MENU_BUILDERS.get(self.game_screen)
         if builder:
             return builder(self.state, self.page, noop_refresh, self.selected_starter)
@@ -1353,7 +2265,10 @@ class PokelikeApp(App):
     # ------------------------------------------------------------------
 
     def on_key(self, event) -> None:
-        key = event.key
+        # Let pushed screens (JSON viewer, Pokédex) handle their own keys
+        if len(self.screen_stack) > 1:
+            return
+        key   = event.key
         items = self._items
         if not items:
             return
@@ -1364,13 +2279,27 @@ class PokelikeApp(App):
             self.selected = (self.selected + 1) % len(items)
             self._rebuild()
         elif key == "left":
-            gen = self.state.get("selected_gen") or "I"
-            self.selected_starter = (self.selected_starter - 1) % max(1, len(get_starters(gen)))
-            self._rebuild()
+            if self.game_screen == ScreenType.MAP:
+                nodes_all  = self.state.get("nodes", [])
+                n_acc      = max(1, sum(1 for n in nodes_all if n["accessible"]))
+                self.map_carousel_idx = (self.map_carousel_idx - 1) % n_acc
+                self.selected = self.map_carousel_idx
+                self._rebuild()
+            else:
+                gen = self.state.get("selected_gen") or "I"
+                self.selected_starter = (self.selected_starter - 1) % max(1, len(get_starters(gen)))
+                self._rebuild()
         elif key == "right":
-            gen = self.state.get("selected_gen") or "I"
-            self.selected_starter = (self.selected_starter + 1) % max(1, len(get_starters(gen)))
-            self._rebuild()
+            if self.game_screen == ScreenType.MAP:
+                nodes_all  = self.state.get("nodes", [])
+                n_acc      = max(1, sum(1 for n in nodes_all if n["accessible"]))
+                self.map_carousel_idx = (self.map_carousel_idx + 1) % n_acc
+                self.selected = self.map_carousel_idx
+                self._rebuild()
+            else:
+                gen = self.state.get("selected_gen") or "I"
+                self.selected_starter = (self.selected_starter + 1) % max(1, len(get_starters(gen)))
+                self._rebuild()
         elif key == "enter":
             self._execute_item(self.selected)
         elif key in ("escape", "q"):
@@ -1385,8 +2314,7 @@ class PokelikeApp(App):
 
     @work(thread=True)
     def _execute_item(self, index: int) -> None:
-        """Submit action to browser thread; handle sentinel results on main thread."""
-        items = self._items
+        items  = self._items
         result = self.run_in_browser(lambda: _execute(items, index))
         if result == "QUIT":
             self.call_from_thread(self.exit)
@@ -1403,15 +2331,14 @@ class PokelikeApp(App):
 
 def main():
     PokelikeApp().run()
-    # Reset terminal: SGR attributes, palette colours, cursor visibility
     sys.stdout.write(
-        "\033[0m"        # reset SGR attributes
-        "\033[39m"       # reset foreground to default
-        "\033[49m"       # reset background to default
-        "\033]104\007"   # reset all 256 palette entries
-        "\033]110\007"   # reset terminal foreground colour
-        "\033]111\007"   # reset terminal background colour
-        "\033[?25h"      # show cursor
+        "\033[0m"
+        "\033[39m"
+        "\033[49m"
+        "\033]104\007"
+        "\033]110\007"
+        "\033]111\007"
+        "\033[?25h"
     )
     sys.stdout.flush()
 
