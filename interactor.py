@@ -294,7 +294,48 @@ class BagPanel(Static):
         else:
             t.append("—\n", style="#555577")
         t.append("\n", style="")
-        t.append("R  refresh", style="dim #555577")
+        t.append("R  refresh\n", style="dim #555577")
+        t.append("J  raw json", style="dim #555577")
+        self.update(t)
+
+
+class BossPanel(Static):
+    """Boss/gym leader info panel for the MAP screen."""
+
+    BORDER_TITLE = "BOSS"
+
+    DEFAULT_CSS = """
+    BossPanel {
+        width: 21;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 1;
+        height: auto;
+        margin-left: 1;
+        margin-top: 1;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    """
+
+    def update_boss(self, stage: dict) -> None:
+        boss      = stage.get("boss") or ""
+        boss_type = stage.get("boss_type") or ""
+        team      = (stage.get("boss_team") or [])[:6]
+        t = Text()
+        if boss:
+            t.append(f"{boss}\n", style="bold #f5c518")
+            if boss_type:
+                t.append(f"{boss_type} Gym\n", style="#e8e8ff")
+        else:
+            t.append("—\n", style="#555577")
+        if team:
+            t.append("\n")
+            for p in team:
+                name  = (str(p.get("name") or ""))[:11]
+                level = p.get("level") or 0
+                lv    = f"Lv{level}" if level else "?"
+                t.append(f"{name:<11} {lv}\n", style="#aaaacc")
         self.update(t)
 
 
@@ -451,43 +492,37 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ]
         return items
 
-    # ── team pick: choose which Pokémon to act on ─────────────────────
-    if swap_source is not None and swap_source[0] == "team":
+    # ── swap: pick source Pokémon ─────────────────────────────────────
+    if swap_source is not None and swap_source[0] == "swap":
         items = []
         for i, p in enumerate(team):
             shortcut = digit_shortcuts[i] if i < len(digit_shortcuts) else "?"
-            def pick_pokemon(idx=i):
-                swap_source[0] = ("menu", idx)
-                return f"Selected {team[idx]['name']}"
-            items.append(MenuItem(p["name"], shortcut, pick_pokemon))
+            def pick_swap_src(idx=i):
+                swap_source[0] = idx
+                return f"Swap {team[idx]['name']} — pick target"
+            items.append(MenuItem(p["name"], shortcut, pick_swap_src))
         items += [
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
         ]
         return items
 
-    # ── action sub-menu: Swap or Item ─────────────────────────────────
-    if swap_source is not None and isinstance(swap_source[0], tuple) and swap_source[0][0] == "menu":
-        _, poke_idx = swap_source[0]
-        poke_name   = team[poke_idx]["name"] if poke_idx < len(team) else "?"
-
-        def go_swap(idx=poke_idx):
-            swap_source[0] = idx
-            return f"Swap {poke_name} — pick target"
-
-        def go_item(idx=poke_idx):
-            page.evaluate("""(i) => {
-                const slot = document.querySelectorAll('.map-panel-left .team-slot')[i]
-                if (!slot) return
-                const badge = slot.querySelector('.held-item, .item-badge, [class*="item"]')
-                if (badge) badge.click()
-            }""", idx)
-            swap_source[0] = None
-            return f"Clicked item for {poke_name}"
-
-        items = [
-            MenuItem(f"Swap  {poke_name}", "S", go_swap),
-            MenuItem(f"Item  {poke_name}", "I", go_item),
+    # ── item_pick: pick which Pokémon to open item overlay for ────────
+    if swap_source is not None and swap_source[0] == "item_pick":
+        items = []
+        for i, p in enumerate(team):
+            shortcut = digit_shortcuts[i] if i < len(digit_shortcuts) else "?"
+            def pick_item_poke(idx=i, name=p["name"]):
+                page.evaluate("""(i) => {
+                    const slot = document.querySelectorAll('.map-panel-left .team-slot')[i]
+                    if (!slot) return
+                    const badge = slot.querySelector('.held-item, .item-badge, [class*="item"]')
+                    if (badge) badge.click()
+                }""", idx)
+                swap_source[0] = None
+                return f"Clicked item for {name}"
+            items.append(MenuItem(p["name"], shortcut, pick_item_poke))
+        items += [
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
         ]
@@ -544,17 +579,20 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         items.append(MenuItem("Bag", "B", open_bag))
 
     if swap_source is not None and len(team) > 1:
-        def enter_team():
-            swap_source[0] = "team"
-            return "Pick Pokémon"
-        items.append(MenuItem("Pokémon Team", "W", enter_team))
+        def enter_swap():
+            swap_source[0] = "swap"
+            return "Pick Pokémon to swap"
+        def enter_item():
+            swap_source[0] = "item_pick"
+            return "Pick Pokémon for item"
+        items.append(MenuItem("Pokémon Swap",  "W", enter_swap))
+        items.append(MenuItem("Pokémon Items", "I", enter_item))
 
     def open_dex():
         return "SHOW_POKEDEX"
 
     items += [
         MenuItem("Pokédex",     "D", open_dex),
-        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
@@ -1066,6 +1104,266 @@ class CatchPokemonPanel(Widget):
 
 
 # ---------------------------------------------------------------------------
+# Battle screen widgets
+# ---------------------------------------------------------------------------
+
+class BattleCard(Widget):
+    """One pokémon row in the battle screen."""
+
+    DEFAULT_CSS = """
+    BattleCard {
+        width: 1fr;
+        height: auto;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    BattleCard.active  { border: round #00d7d7; }
+    BattleCard.fainted { border: round #333344; background: #090912; }
+    .bc-header { layout: horizontal; height: 1; }
+    .bc-icon   { width: 3; content-align: center middle; color: #00d7d7; }
+    .bc-name   { width: 1fr; color: #e8e8ff; text-style: bold; content-align: left middle; }
+    .bc-level  { width: 8; color: #555577; content-align: right middle; }
+    .bc-hp-ok  { color: #00e676; }
+    .bc-hp-mid { color: #f5c518; }
+    .bc-hp-low { color: #ff1744; }
+    .bc-faint  { color: #333355; }
+    """
+
+    def __init__(self, p: dict) -> None:
+        super().__init__()
+        self._p = p
+        if p.get("is_active"):
+            self.add_class("active")
+        if p.get("is_fainted"):
+            self.add_class("fainted")
+
+    def compose(self) -> ComposeResult:
+        p    = self._p
+        icon = "◉" if p.get("is_active") else "·"
+        with Horizontal(classes="bc-header"):
+            yield Label(icon,                          classes="bc-icon")
+            yield Label(p.get("name", "?"),            classes="bc-name")
+            lv = p.get("level")
+            yield Label(f"Lv{lv}" if lv else "",      classes="bc-level")
+        if p.get("is_fainted"):
+            yield Label("✕  fainted", classes="bc-faint")
+        else:
+            hp_cur = p.get("hp_current")
+            hp_max = p.get("hp_max")
+            if hp_cur is not None and hp_max:
+                pct    = hp_cur / hp_max
+                filled = round(pct * 10)
+                bar    = "█" * filled + "░" * (10 - filled)
+                hp_cls = "bc-hp-low" if pct < 0.2 else "bc-hp-mid" if pct < 0.5 else "bc-hp-ok"
+                yield Label(f"{bar}  {hp_cur}/{hp_max}", classes=hp_cls)
+
+
+class BattleSidePanel(Widget):
+    """One side's team in the battle screen."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    BattleSidePanel {
+        width: 1fr;
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 1;
+        layout: vertical;
+        margin-right: 1;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    BattleSidePanel:last-of-type { margin-right: 0; }
+    .bs-row { layout: horizontal; height: 1fr; margin-bottom: 1; }
+    .bs-row:last-of-type { margin-bottom: 0; }
+    .bs-gap { width: 1; }
+    """
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.border_title = title
+
+    def compose(self) -> ComposeResult:
+        for _ in range(3):
+            yield Horizontal(classes="bs-row")
+
+    def rebuild(self, team: list) -> None:
+        for ri, row in enumerate(self.query(".bs-row")):
+            row.query(BattleCard).remove()
+            row.query(Label).remove()
+            left  = team[ri * 2]     if ri * 2     < len(team) else None
+            right = team[ri * 2 + 1] if ri * 2 + 1 < len(team) else None
+            children: list = []
+            if left is not None:
+                children.append(BattleCard(left))
+            if left is not None and right is not None:
+                children.append(Label(" ", classes="bs-gap"))
+            if right is not None:
+                children.append(BattleCard(right))
+            if children:
+                row.mount(*children)
+
+
+class BattlePanel(Widget):
+    """Full battle layout: your team left, rival right, action strip below."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    BattlePanel {
+        layout: vertical;
+        height: 1fr;
+        padding: 0 1 1 1;
+    }
+    #battle-sides {
+        layout: horizontal;
+        height: 1fr;
+    }
+    #battle-strip {
+        height: 5;
+        layout: horizontal;
+        padding: 0 1;
+        border-top: solid #1e1e3a;
+        align: left middle;
+    }
+    #battle-strip ActionItem {
+        width: auto;
+        min-width: 14;
+        margin-right: 1;
+    }
+    #battle-strip ActionItem > .item-label { width: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="battle-sides"):
+            yield BattleSidePanel("YOUR TEAM")
+            yield BattleSidePanel("RIVAL")
+        yield Horizontal(id="battle-strip")
+
+    def rebuild(self, your_team: list, enemy: list, items: list, selected: int) -> None:
+        panels = list(self.query(BattleSidePanel))
+        if panels:
+            panels[0].rebuild(your_team)
+        if len(panels) > 1:
+            panels[1].rebuild(enemy)
+
+        strip    = self.query_one("#battle-strip")
+        existing = list(strip.query(ActionItem))
+        if len(existing) == len(items):
+            for i, w in enumerate(existing):
+                w.refresh_state(items[i], i == selected)
+        else:
+            strip.query(ActionItem).remove()
+            strip.mount(*[
+                ActionItem(item, i == selected)
+                for i, item in enumerate(items)
+            ])
+
+
+# ---------------------------------------------------------------------------
+# Item select screen widgets
+# ---------------------------------------------------------------------------
+
+class ItemSelectCard(Widget):
+    """One item choice card in the item select screen."""
+
+    DEFAULT_CSS = """
+    ItemSelectCard {
+        width: 1fr;
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 1 2;
+        layout: vertical;
+    }
+    ItemSelectCard.selected { border: round #f5c518; background: #16163a; }
+    .isc-shortcut { color: #f5c518; text-style: bold; margin-bottom: 1; }
+    .isc-name     { color: #e8e8ff; text-style: bold; margin-bottom: 1; }
+    .isc-desc     { color: #9999bb; }
+    """
+
+    def __init__(self, choice: dict, shortcut: str, is_selected: bool) -> None:
+        super().__init__()
+        self._choice   = choice
+        self._shortcut = shortcut
+        if is_selected:
+            self.add_class("selected")
+
+    def compose(self) -> ComposeResult:
+        c = self._choice
+        yield Label(f"[ {self._shortcut} ]", classes="isc-shortcut")
+        yield Label(c.get("name", "?"),       classes="isc-name")
+        yield Label(c.get("description", ""), classes="isc-desc")
+
+    def set_selected(self, value: bool) -> None:
+        self.set_class(value, "selected")
+
+
+class ItemSelectPanel(Widget):
+    """Horizontal row of ItemSelectCards + a compact action strip below."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    ItemSelectPanel {
+        layout: vertical;
+        height: 1fr;
+        padding: 0 1 1 1;
+    }
+    #item-cards { layout: horizontal; height: 1fr; }
+    #item-strip {
+        height: 5;
+        layout: horizontal;
+        padding: 0 1;
+        border-top: solid #1e1e3a;
+        align: left middle;
+    }
+    #item-strip ActionItem {
+        width: auto;
+        min-width: 14;
+        margin-right: 1;
+    }
+    #item-strip ActionItem > .item-label { width: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Horizontal(id="item-cards")
+        yield Horizontal(id="item-strip")
+
+    def rebuild(self, choices: list, strip_items: list, selected: int) -> None:
+        shortcuts = "123456789"
+        cards_row = self.query_one("#item-cards")
+        existing  = list(cards_row.query(ItemSelectCard))
+
+        if len(existing) == len(choices):
+            for i, card in enumerate(existing):
+                card.set_selected(i == selected)
+        else:
+            cards_row.query(ItemSelectCard).remove()
+            cards_row.mount(*[
+                ItemSelectCard(c, shortcuts[i] if i < len(shortcuts) else "?", i == selected)
+                for i, c in enumerate(choices)
+            ])
+
+        strip    = self.query_one("#item-strip")
+        existing = list(strip.query(ActionItem))
+        offset   = len(choices)
+        if len(existing) == len(strip_items):
+            for i, w in enumerate(existing):
+                w.refresh_state(strip_items[i], (offset + i) == selected)
+        else:
+            strip.query(ActionItem).remove()
+            strip.mount(*[
+                ActionItem(item, (offset + i) == selected)
+                for i, item in enumerate(strip_items)
+            ])
+
+
+# ---------------------------------------------------------------------------
 # Map screen widgets
 # ---------------------------------------------------------------------------
 
@@ -1348,7 +1646,7 @@ class MapGraphWidget(Static):
                 continue
             n     = nodes[idx]
             ntype = n.get("type", "")
-            if ntype not in ("trainer", "boss"):
+            if ntype != "trainer":
                 continue
             poke_type  = (n.get("poke_type") or "").strip()
             first_type = poke_type.split("/")[0].strip()
@@ -1593,6 +1891,9 @@ class ActionMenu(Widget):
             # Screen changed — full remount
             self.query(ActionItem).remove()
             self.mount(*[ActionItem(item, i == selected) for i, item in enumerate(items)])
+        widgets = list(self.query(ActionItem))
+        if 0 <= selected < len(widgets):
+            widgets[selected].scroll_visible(animate=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1995,6 +2296,9 @@ class PokelikeApp(App):
         layout: vertical;
     }
     #map-inner { height: 1fr; }
+    #map-right-col { width: 21; layout: vertical; margin-left: 1; }
+    #map-right-col BagPanel { margin-left: 0; }
+    #map-right-col BossPanel { margin-left: 0; }
     #map-center {
         width: 1fr;
         layout: vertical;
@@ -2035,9 +2339,10 @@ class PokelikeApp(App):
         self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._stop           = threading.Event()
         self._ui_ready        = False
-        self._last_items_key  = None
-        self._last_team_key   = None
-        self._last_graph_key  = None
+        self._last_items_key       = None
+        self._last_team_key        = None
+        self._last_graph_key       = None
+        self._last_battle_team_key = None
         self.map_carousel_idx = 0
 
     def compose(self) -> ComposeResult:
@@ -2054,17 +2359,23 @@ class PokelikeApp(App):
                 with Vertical(id="map-center"):
                     yield MapGraphWidget(id="map-graph")
                     yield SingleNodeDisplay(id="map-node-display")
-                yield BagPanel(id="bag-panel")
+                with Vertical(id="map-right-col"):
+                    yield BagPanel(id="bag-panel")
+                    yield BossPanel(id="boss-panel")
             with Horizontal(id="map-strip"):
                 pass
         with Horizontal(id="catch-layout"):
             yield CatchPokemonPanel(id="catch-panel")
+        yield BattlePanel(id="battle-panel")
+        yield ItemSelectPanel(id="item-select-panel")
         yield Footer()
 
     def on_mount(self) -> None:
         self._ui_ready = True
-        self.query_one("#map-layout").display   = False
-        self.query_one("#catch-layout").display = False
+        self.query_one("#map-layout").display         = False
+        self.query_one("#catch-layout").display       = False
+        self.query_one("#battle-panel").display       = False
+        self.query_one("#item-select-panel").display  = False
         t = threading.Thread(target=self._browser_loop, daemon=True)
         t.start()
 
@@ -2108,7 +2419,7 @@ class PokelikeApp(App):
                             # Keep clicking through multi-phase evolution overlays
                             if new_screen == ScreenType.EVOLUTION:
                                 page.evaluate("""() => {
-                                    const o = document.querySelector('.evo-overlay')
+                                    const o = document.getElementById('evo-overlay')
                                     if (o) o.dispatchEvent(
                                         new MouseEvent('click', {bubbles: true, cancelable: true})
                                     )
@@ -2179,7 +2490,7 @@ class PokelikeApp(App):
             self._task_queue.put((lambda: page.evaluate(js), [None], threading.Event()))
         elif new == ScreenType.EVOLUTION:
             evo_js = """() => {
-                const o = document.querySelector('.evo-overlay')
+                const o = document.getElementById('evo-overlay')
                 if (o) o.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}))
             }"""
             self._task_queue.put((lambda: page.evaluate(evo_js), [None], threading.Event()))
@@ -2201,12 +2512,17 @@ class PokelikeApp(App):
         except Exception:
             pass
 
-        is_map   = self.game_screen == ScreenType.MAP
-        is_catch = self.game_screen == ScreenType.CATCH_POKEMON
+        is_map         = self.game_screen == ScreenType.MAP
+        is_catch       = self.game_screen == ScreenType.CATCH_POKEMON
+        is_battle      = self.game_screen == ScreenType.BATTLE
+        is_item_select = self.game_screen == ScreenType.ITEM_SELECT
+        is_custom      = is_map or is_catch or is_battle or is_item_select
         try:
-            self.query_one("#default-layout").display = not is_map and not is_catch
-            self.query_one("#map-layout").display     = is_map
-            self.query_one("#catch-layout").display   = is_catch
+            self.query_one("#default-layout").display      = not is_custom
+            self.query_one("#map-layout").display          = is_map
+            self.query_one("#catch-layout").display        = is_catch
+            self.query_one("#battle-panel").display        = is_battle
+            self.query_one("#item-select-panel").display   = is_item_select
         except Exception:
             pass
 
@@ -2233,6 +2549,12 @@ class PokelikeApp(App):
             # Bag
             try:
                 self.query_one(BagPanel).update_bag(self.state.get("bag", []))
+            except Exception:
+                pass
+
+            # Boss
+            try:
+                self.query_one(BossPanel).update_boss(self.state.get("stage", {}))
             except Exception:
                 pass
 
@@ -2268,6 +2590,56 @@ class PokelikeApp(App):
                 strip_items = self._items[len(choices):]
                 try:
                     self.query_one(CatchPokemonPanel).rebuild(choices, strip_items, self.selected)
+                except Exception:
+                    pass
+            return
+
+        elif is_battle:
+            # Team panels — only rebuild when HP/active/fainted state changes
+            battle_team_key = tuple(
+                f"{p['name']}:{p.get('hp_current')}:{p.get('is_active')}:{p.get('is_fainted')}"
+                for p in self.state.get("your_team", []) + self.state.get("enemy", [])
+            )
+            if battle_team_key != self._last_battle_team_key:
+                self._last_battle_team_key = battle_team_key
+                try:
+                    panel = self.query_one(BattlePanel)
+                    panels = list(panel.query(BattleSidePanel))
+                    if panels:
+                        panels[0].rebuild(self.state.get("your_team", []))
+                    if len(panels) > 1:
+                        panels[1].rebuild(self.state.get("enemy", []))
+                except Exception:
+                    pass
+
+            # Action strip — update on every selection change
+            strip_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected)
+            if strip_key != self._last_items_key:
+                self._last_items_key = strip_key
+                try:
+                    strip    = self.query_one("#battle-strip", Horizontal)
+                    existing = list(strip.query(ActionItem))
+                    if len(existing) == len(self._items):
+                        for i, w in enumerate(existing):
+                            w.refresh_state(self._items[i], i == self.selected)
+                    else:
+                        strip.query(ActionItem).remove()
+                        strip.mount(*[
+                            ActionItem(item, i == self.selected)
+                            for i, item in enumerate(self._items)
+                        ])
+                except Exception:
+                    pass
+            return
+
+        elif is_item_select:
+            items_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected)
+            if items_key != self._last_items_key:
+                self._last_items_key = items_key
+                choices     = self.state.get("choices", [])
+                strip_items = self._items[len(choices):]
+                try:
+                    self.query_one(ItemSelectPanel).rebuild(choices, strip_items, self.selected)
                 except Exception:
                     pass
             return
@@ -2359,22 +2731,34 @@ class PokelikeApp(App):
             self._rebuild()
         elif key == "left":
             if self.game_screen == ScreenType.MAP:
-                n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
-                if self.selected < n_acc:   # only in carousel range
-                    self.map_carousel_idx = (self.map_carousel_idx - 1) % max(1, n_acc)
-                    self.selected = self.map_carousel_idx
-                    self._rebuild()
+                sv = self.swap_source[0]
+                in_pick = sv in ("swap", "item_pick") or isinstance(sv, int) or self.bag_mode[0]
+                self.selected = (self.selected - 1) % len(items)
+                if not in_pick:
+                    n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+                    if self.selected < n_acc:
+                        self.map_carousel_idx = self.selected
+                self._rebuild()
+            elif self.game_screen in (ScreenType.STARTER_SELECT, ScreenType.CATCH_POKEMON, ScreenType.BATTLE, ScreenType.ITEM_SELECT):
+                self.selected = (self.selected - 1) % len(items)
+                self._rebuild()
             else:
                 gen = self.state.get("selected_gen") or "I"
                 self.selected_starter = (self.selected_starter - 1) % max(1, len(get_starters(gen)))
                 self._rebuild()
         elif key == "right":
             if self.game_screen == ScreenType.MAP:
-                n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
-                if self.selected < n_acc:   # only in carousel range
-                    self.map_carousel_idx = (self.map_carousel_idx + 1) % max(1, n_acc)
-                    self.selected = self.map_carousel_idx
-                    self._rebuild()
+                sv = self.swap_source[0]
+                in_pick = sv in ("swap", "item_pick") or isinstance(sv, int) or self.bag_mode[0]
+                self.selected = (self.selected + 1) % len(items)
+                if not in_pick:
+                    n_acc = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+                    if self.selected < n_acc:
+                        self.map_carousel_idx = self.selected
+                self._rebuild()
+            elif self.game_screen in (ScreenType.STARTER_SELECT, ScreenType.CATCH_POKEMON, ScreenType.BATTLE, ScreenType.ITEM_SELECT):
+                self.selected = (self.selected + 1) % len(items)
+                self._rebuild()
             else:
                 gen = self.state.get("selected_gen") or "I"
                 self.selected_starter = (self.selected_starter + 1) % max(1, len(get_starters(gen)))
@@ -2383,6 +2767,9 @@ class PokelikeApp(App):
             self._execute_item(self.selected)
         elif key in ("escape", "q"):
             self.exit()
+        elif key == "j" and self.game_screen == ScreenType.MAP:
+            state_json = json.dumps(self.state, indent=2)
+            self.push_screen(JsonScreen(state_json))
         else:
             char = key.lower() if len(key) == 1 else None
             if char:

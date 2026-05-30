@@ -6,6 +6,25 @@ from parsers.base import AbstractParser
 
 
 # Sprite filename → node type
+KNOWN_TYPES = {
+    "normal", "fire", "water", "grass", "electric", "ice", "fighting",
+    "poison", "ground", "flying", "psychic", "bug", "rock", "ghost",
+    "dragon", "dark", "steel", "fairy",
+}
+
+# Fallback type per known boss sprite name (gym leaders / elite four).
+BOSS_SPRITE_TYPE = {
+    "brock":    "Rock",     "misty":    "Water",    "surge":    "Electric",
+    "erika":    "Grass",    "koga":     "Poison",   "janine":   "Poison",
+    "sabrina":  "Psychic",  "blaine":   "Fire",     "giovanni": "Ground",
+    "lorelei":  "Ice",      "bruno":    "Fighting", "agatha":   "Ghost",
+    "lance":    "Dragon",   "gary":     "Normal",   "red":      "Normal",
+    "falkner":  "Flying",   "bugsy":    "Bug",      "whitney":  "Normal",
+    "morty":    "Ghost",    "chuck":    "Fighting", "jasmine":  "Steel",
+    "pryce":    "Ice",      "clair":    "Dragon",   "will":     "Psychic",
+    "karen":    "Dark",
+}
+
 SPRITE_TYPE = {
     "catchPokemon":  "catch_pokemon",
     "grass":         "wild_encounter",
@@ -33,9 +52,11 @@ BOSS_SPRITES = {
 
 class MapParser(AbstractParser):
     def parse(self, page: Page) -> dict:
+        stage = self._parse_header(page)
+        stage["boss_team"] = self._parse_boss_team(page)
         return {
             "screen": "map",
-            "stage":  self._parse_header(page),
+            "stage":  stage,
             "team":   self._parse_team(page),
             "bag":    self._parse_bag(page),
             "badges": self._parse_badges(page),
@@ -57,6 +78,27 @@ class MapParser(AbstractParser):
         except Exception:
             return {"number": None, "boss": None, "boss_type": None}
 
+    def _parse_boss_team(self, page: Page) -> list:
+        try:
+            return page.evaluate("""() => {
+                try {
+                    const run = JSON.parse(localStorage.getItem('poke_current_run') || '{}')
+                    const mapIdx = run.currentMap
+                                ?? (typeof state !== 'undefined' ? state.currentMap : null)
+                    const gen2   = run.gen2Mode
+                                || (typeof state !== 'undefined' ? !!state.gen2Mode : false)
+                    const leaders = gen2 ? JOHTO_GYM_LEADERS : GYM_LEADERS
+                    const leader  = leaders?.[mapIdx]
+                    if (!leader?.team?.length) return []
+                    return leader.team.map(p => ({
+                        name:  p.name || p.species || String(p.speciesId || ''),
+                        level: p.level || p.lv || 0,
+                    }))
+                } catch(e) { return [] }
+            }""")
+        except Exception:
+            return []
+
     # ------------------------------------------------------------------ team
 
     def _load_run_team(self, page: Page) -> list:
@@ -69,12 +111,22 @@ class MapParser(AbstractParser):
     def _parse_team(self, page: Page) -> list:
         slots = page.locator(".map-panel-left .team-slot").all()
         run_team = self._load_run_team(page)
+        # Build name→entry map so swapped DOM order still finds the right LS data.
+        # Try common field names the game might use for species/name.
+        ls_by_name: dict[str, dict] = {}
+        for entry in run_team:
+            for field in ("name", "species", "speciesName", "nickname", "pokemon"):
+                val = entry.get(field)
+                if isinstance(val, str) and val:
+                    ls_by_name[val.lower()] = entry
+                    break
         team = []
         for i, slot in enumerate(slots):
             name   = self._txt(slot, ".team-slot-name")
             level  = self._parse_level(self._txt(slot, ".team-slot-lv"))
             hp_pct = self._parse_hp_pct(slot)
-            ls = run_team[i] if i < len(run_team) else {}
+            # Match by name first; fall back to positional if name not found in LS.
+            ls = ls_by_name.get(name.lower()) or (run_team[i] if i < len(run_team) else {})
             # Held item: try several known LS field names then fall back to DOM
             raw_held = (
                 ls.get("heldItem")
@@ -205,28 +257,49 @@ class MapParser(AbstractParser):
                         accessible: lsNode.accessible || style.includes('pointer'),
                         ls_done:    lsDone,
                         ls_raw:     lsNode,
-                        nodeLabel:  indexLabelMap[i] || extraLabel || ''
+                        nodeLabel:  indexLabelMap[i] || extraLabel || '',
+                        ls_type:    lsNode.type || lsNode.nodeType || lsNode.kind || '',
+                        ls_sprite:  lsNode.trainerSprite || lsNode.sprite || lsNode.spriteKey || ''
                     }
                 })
         }""")
 
         result = []
         for n in nodes:
-            sprite = unquote(n["sprite"])
-            node_type = self._sprite_to_type(sprite)
+            sprite    = unquote(n["sprite"])
+            ls_sprite = unquote(n.get("ls_sprite", ""))
+            ls_type   = (n.get("ls_type") or "").lower()
+            label     = (n.get("nodeLabel") or "").lower()
+            node_type = self._sprite_to_type(sprite, ls_sprite, ls_type, label)
             if n["ls_done"]:
                 state = "completed"
             elif n["accessible"]:
                 state = "available"
             else:
                 state = "locked"
-            # Extract Pokémon type from label e.g. "Officer — +2 Levels — Fire Pokemon"
+            # Extract Pokémon type from label.
+            # Primary: "Fire Pokemon" / "Fire Type" patterns.
+            # Fallback: any segment that is itself a known type name (e.g. boss labels
+            # like "Gym Leader — Lance — Dragon" have no "Pokemon" keyword).
             poke_type = ""
             if n.get("nodeLabel"):
                 parts = [p.strip() for p in n["nodeLabel"].split("—")]
                 for part in reversed(parts):
                     if "Pokemon" in part or "Type" in part:
                         poke_type = part.replace("Pokemon", "").replace("Type", "").strip()
+                        break
+                if not poke_type:
+                    for part in reversed(parts):
+                        if part.strip().lower() in KNOWN_TYPES:
+                            poke_type = part.strip().title()
+                            break
+            # For boss nodes whose label has no type info, fall back to the
+            # known-boss sprite→type table (covers all gen 1/2 gym leaders + E4).
+            if not poke_type and node_type == "boss":
+                for s in (unquote(n.get("ls_sprite", "")), unquote(n.get("sprite", ""))):
+                    t = BOSS_SPRITE_TYPE.get(s.lower())
+                    if t:
+                        poke_type = t
                         break
             result.append({
                 "index":      n["index"],
@@ -239,12 +312,23 @@ class MapParser(AbstractParser):
             })
         return result
 
-    def _sprite_to_type(self, sprite: str) -> str:
+    _BOSS_LABEL_KEYWORDS = ("gym leader", "elite four", "elite 4", "champion", "boss")
+
+    def _sprite_to_type(self, sprite: str, ls_sprite: str = "",
+                        ls_type: str = "", label: str = "") -> str:
         if sprite in SPRITE_TYPE:
             return SPRITE_TYPE[sprite]
-        if sprite.lower() in BOSS_SPRITES:
+        # Check both the rendered SVG sprite and the LS trainerSprite field
+        for s in (sprite.lower(), ls_sprite.lower()):
+            if s in BOSS_SPRITES:
+                return "boss"
+        # LS type field may explicitly say "boss" / "gym" / etc.
+        if any(kw in ls_type for kw in ("boss", "gym", "elite", "champion")):
             return "boss"
-        if sprite == "":
+        # Node label (from getNodeLabel) often names the role
+        if any(kw in label for kw in self._BOSS_LABEL_KEYWORDS):
+            return "boss"
+        if sprite == "" and ls_sprite == "":
             return "start"
         return "trainer"
 

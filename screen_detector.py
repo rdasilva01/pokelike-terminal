@@ -29,7 +29,7 @@ def detect(page: Page) -> ScreenType:
         result = page.evaluate("""() => {
             const vis = sel => { const el = document.querySelector(sel); return !!(el && el.getBoundingClientRect().width > 0) }
             const has = sel => !!document.querySelector(sel)
-            if (vis('.evo-overlay'))        return 'EVOLUTION'
+            if (vis('#evo-overlay'))        return 'EVOLUTION'
             if (vis('.win-title'))          return 'CHAMPION'
             if (vis('.gameover-title'))     return 'GAME_OVER'
             if (vis('.battle-header'))      return 'BATTLE'
