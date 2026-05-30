@@ -50,7 +50,7 @@ PARSER_MAP = {
 
 ROMAN = {"I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6"}
 
-AUTO_REFRESH_INTERVAL = 0.5
+AUTO_REFRESH_INTERVAL = 0.1
 
 STARTERS: dict[str | None, list[tuple[str, str]]] = {
     "I":  [("B", "#4ade80"), ("C", "#fb923c"), ("S", "#38bdf8")],
@@ -895,6 +895,24 @@ def _fallback_items(refresh_fn: Callable, page=None) -> list[MenuItem]:
 
 def _unknown_state(page, screen: ScreenType) -> dict:
     return {"screen": "unknown", "title": page.title(), "url": page.url}
+
+
+def _dom_hash(page, screen: ScreenType) -> str:
+    """Cheap single JS call that returns a string summarising visible DOM state.
+    If the hash is identical to the previous cycle we skip a full parse."""
+    try:
+        return page.evaluate("""() => {
+            const q  = s => document.querySelector(s)
+            const hp = q('.hp-bar-fill')?.getAttribute('style') || ''
+            const sl = q('.team-slot-name')?.innerText || ''
+            const bt = q('.battle-header')?.innerText || ''
+            const nd = document.querySelectorAll('.screen.active svg g').length
+            const it = document.querySelectorAll('.item-card').length
+            const pc = document.querySelectorAll('.poke-choice-wrap').length
+            return `${hp}|${sl}|${bt}|${nd}|${it}|${pc}`
+        }""")
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -2395,6 +2413,7 @@ class PokelikeApp(App):
                 self.page = page
                 self.call_from_thread(self._on_connected, page.url)
                 last_refresh = 0.0
+                last_dom_hash = ""
                 while not self._stop.is_set():
                     while True:
                         try:
@@ -2413,6 +2432,10 @@ class PokelikeApp(App):
                         try:
                             prev       = self.game_screen
                             new_screen = detect(page)
+                            dom_hash   = _dom_hash(page, new_screen)
+                            if dom_hash and dom_hash == last_dom_hash and new_screen == prev:
+                                continue
+                            last_dom_hash = dom_hash
                             p          = PARSER_MAP.get(new_screen)
                             new_state  = p.parse(page) if p else _unknown_state(page, new_screen)
                             self.call_from_thread(self._apply_state, prev, new_screen, new_state)
