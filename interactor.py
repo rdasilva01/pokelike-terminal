@@ -3740,6 +3740,9 @@ class PokelikeApp(App):
         if key == "h" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
             self.prioritize_heal_on[0] = not self.prioritize_heal_on[0]
             self._last_level_path_key = None
+            self._force_parse = True
+            self._rebuild()
+            return
         if key == "c" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
             self.prioritize_catch_on[0] = not self.prioritize_catch_on[0]
             self._last_level_path_key = None
