@@ -32,70 +32,105 @@ python interactor.py  # interactor only (Chrome must already be open)
 
 ## Terminal UI (interactor)
 
-- **↑↓** — navigate menu
+### Global keys (all screens)
+- **↑ ↓** — navigate menu / move between rows
+- **← →** — move between columns (grid screens) or navigate strip
 - **Enter** — execute selected item
 - **Letter shortcuts** — execute directly (N, Z, B, R, P, J, Q…)
-- **P** — reload the browser page (works on all screens)
-- **R** — re-parse current screen state
+- **P** — reload the browser page
 - **J** — view raw parsed JSON (any key to return)
-- **D** — open Pokédex overlay (available on main menu and map screens)
-- **Q / Esc** — quit
+- **D** — open Pokédex overlay (main menu and map screens)
+- **Q** — quit
+- **Esc** — cancel current mode (swap / bag-pick on map); does NOT quit
 
-The UI auto-refreshes state every 0.5 seconds (`AUTO_REFRESH_INTERVAL` in `interactor.py`). Cursor position is preserved after actions; only resets when the screen type changes.
+### Grid navigation (screens with 2D layouts)
+Several screens use 2D grid navigation instead of a flat list:
 
-## Pokédex overlay (`show_pokedex`)
+| Screen | Left/Right | Up/Down |
+|--------|-----------|---------|
+| Main menu | Switch column (modes ↔ gens/starters) or strip | Move within column |
+| Map (normal) | Navigate action strip | Navigate accessible nodes |
+| Map (swap/item) | Move between team columns; navigate strip | Move between team rows; enter/exit strip |
+| Battle | Navigate action strip (left/right = up/down) | — |
+| Catch / Item select | Move between cards; navigate strip | Switch card row ↔ strip |
+| Team full | Move between columns within grid | Move between rows; enter/exit strip |
+| Starter select | — | Up/Down (left/right also work) |
 
-Full-screen overlay accessible via `D` from the main menu or map screen. Loads all 1350 species in one JS round-trip using `getPokemonLocations` and `getSpeciesTypes` game globals plus `pkrl_species_list` and `poke_dex` from localStorage.
+### Map screen modes
+- **Normal**: nodes on top row (← → cycles), utility actions on bottom row (← →)
+- **Swap / Item-pick**: left team panel becomes a navigable 3×2 grid; strip shows Cancel/Quit only
+- **Bag**: strip shows bag items (flat navigation)
+
+The UI auto-refreshes state every **0.1 seconds** (`AUTO_REFRESH_INTERVAL` in `interactor.py`). A DOM hash pre-check skips full re-parses when nothing changed. `_force_parse` is set after any action to guarantee a fresh parse on the next cycle.
+
+## Pokédex overlay
+
+Full-screen overlay accessible via `D` from the main menu or map screen. Loads all 1350 species in one JS round-trip.
 
 **Search mode** (default): type to filter by name prefix, ↑↓ to scroll. Each entry shows types, normal-mode routes, and battle tower tiers.
 
 **Route mode** (Tab to toggle): ◀▶ to cycle through routes and tower tiers in play order, ↑↓ to scroll that location's Pokémon list.
 
-Tower floor tiers map to internal R×M× codes (3 rounds × 3 maps):
-- Early → R1M1, R1M2
-- Early-Middle → R1M3, R2M1
-- Middle → R2M1, R2M2
-- Middle-Late → R2M2, R2M3, R3M1
-- Late → R3M2, R3M3
-
 ## Architecture
 
 ```
-launcher.py         # finds Chrome, launches it with debug port, then starts interactor
-browser.py          # connect_to_chrome() — CDP connection to open Chrome tab
-screen_detector.py  # ScreenType enum + detect(page) — identifies screen by DOM fingerprint
+launcher.py           # finds Chrome, launches it with debug port, then starts interactor
+browser.py            # connect_to_chrome() — CDP connection to open Chrome tab
+screen_detector.py    # ScreenType enum + detect(page) — single JS round-trip fingerprint
 parsers/
-  base.py           # AbstractParser — parse(page) -> dict
-  main_menu.py      # MainMenuParser
-  map_screen.py     # MapParser — team, bag, badges, nodes
-  battle.py         # BattleParser
-  catch_pokemon.py  # CatchPokemonParser
-  item_select.py    # ItemSelectParser
-  item_equip.py     # ItemEquipParser
-  trade_offer.py    # TradeOfferParser
-  pokemon_received.py
-  starter_select.py
-  champion.py       # ChampionParser
+  base.py             # AbstractParser — parse(page) -> dict
+  main_menu.py        # MainMenuParser
+  map_screen.py       # MapParser — 2 CDP calls total (team + everything else merged)
+  battle.py           # BattleParser
+  catch_pokemon.py    # CatchPokemonParser
+  item_select.py      # ItemSelectParser
+  item_equip.py       # ItemEquipParser
+  trade_offer.py      # TradeOfferParser
+  pokemon_received.py # PokemonReceivedParser
+  starter_select.py   # StarterSelectParser
+  champion.py         # ChampionParser
+  team_full.py        # TeamFullParser — team full / release screen
 models/
-  screens.py        # TypedDicts for each screen's state dict
-interactor.py       # Rich TUI — render loop, menu builders, key handling, show_pokedex
-config.py           # TARGET_URL, CDP port constants
+  screens.py          # TypedDicts for each screen's state dict
+interactor.py         # Textual TUI — widgets, render loop, menu builders, key handling
+config.py             # TARGET_URL, CDP port constants
 ```
 
-**Data flow:** `browser.py` → `screen_detector.detect()` → `Parser.parse()` → JSON dict → TUI menu → action
+**Data flow:** `browser.py` → `screen_detector.detect()` → `Parser.parse()` → JSON dict → TUI widget → action
+
+### Custom screen layouts (interactor.py)
+
+Each special screen has a dedicated Textual widget instead of the default ActionMenu:
+
+| Screen | Widget | Layout |
+|--------|--------|--------|
+| Main menu | `MainMenuPanel` | Mode cards (left) + gen/starter column (right) + strip |
+| Map | `TeamGridPanel` + `MapGraphWidget` + strip | Team 3×2 · graph · bag/boss · node strip |
+| Battle | `BattlePanel` → two `BattleSidePanel` | YOUR TEAM · RIVAL (each 3×2) + strip |
+| Catch | `CatchPokemonPanel` | Horizontal cards + strip |
+| Item select | `ItemSelectPanel` | Horizontal cards + strip |
+| Team full | `TeamFullPanel` | Incoming label + 2×3 grid + strip |
+
+### Performance
+
+- `MapParser` uses **2 `page.evaluate()` calls**: `_parse_team()` (DOM + localStorage in one JS shot) and `_parse_static()` (header, boss, bag, badges, nodes — all merged).
+- `_dom_hash()` runs one cheap JS call per cycle; identical hash + same screen = skip full parse.
+- `_force_parse` flag is set after any action to guarantee a fresh parse on the next cycle regardless of hash.
 
 ## DOM notes (pokelike.xyz)
 
 - Buttons use class `btn-primary`. Their `textContent` is **title case** ("Normal Mode", "Battle Tower") even though CSS renders them uppercase — always match against title case in code.
 - Gen selector buttons use class `gen-btn`; active gen has class `gen-btn--active`.
 - The game uses `text-transform: uppercase` CSS, so visual text ≠ DOM text.
-- Screen detection uses `page.locator("text=...")` which does case-insensitive substring matching.
+- Screen detection uses a single `page.evaluate()` JS call checking DOM fingerprints in priority order.
 - Clicking is done via `page.evaluate()` JS to avoid Playwright locator timeouts.
+- Team full screen: `.swap-prompt` is the unique fingerprint; last `.poke-card` in `.screen.active` is the incoming pokemon; the rest are the current team.
 
 ## Adding a New Screen Parser
 
 1. Add a `ScreenType` value in `screen_detector.py`.
-2. Add a detection fingerprint in `detect()` — find a unique DOM element for that screen.
-3. Create `parsers/<screen_name>.py` subclassing `AbstractParser`.
+2. Add a detection fingerprint in `detect()` — find a unique DOM element for that screen (checked before any existing fingerprint it might conflict with).
+3. Create `parsers/<screen_name>.py` subclassing `AbstractParser`. Use a single `page.evaluate()` that returns all needed data in one JS round-trip.
 4. Add a `TypedDict` in `models/screens.py`.
 5. Register the parser in `PARSER_MAP` and add a menu builder in `MENU_BUILDERS` in `interactor.py`.
+6. For a rich layout: create a Widget subclass, add it to `compose()`, hide it in `on_mount()`, wire `display` in the `_rebuild()` display-switching block, and add an `elif is_<screen>:` rebuild branch that returns early.

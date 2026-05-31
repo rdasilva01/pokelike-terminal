@@ -2,19 +2,22 @@
 
 A Python terminal UI for automating [pokelike.xyz](https://pokelike.xyz/), a Pokémon roguelike web game.
 
-Connects to an open Chrome window via CDP, detects the current game screen, parses its state into JSON, and lets you navigate the game from a keyboard-driven terminal interface.
+Connects to an open Chrome window via CDP, detects the current game screen, parses its state, and lets you navigate the game from a fully keyboard-driven terminal interface.
 
 ## Features
 
-- Auto-detects game screens (main menu, map, battle, catch, items, trades, champion, and more)
-- Rich terminal UI with keyboard navigation and letter shortcuts
-- Auto-refreshes game state every 0.5 seconds
-- Auto-clicks starter select, badge screen, game over, and evolution screens
-- 3-panel MAP layout: team (with HP and move info) · actions · bag
-- Pokémon swap via drag-to from the terminal
-- Bag equip mode — pick an item from the bag and apply it to a Pokémon
-- **Pokédex overlay** — type-ahead search across all 1350 species + reverse route lookup
+- **Auto-detects 15+ game screens** — main menu, map, battle, catch, items, trades, team full, champion, and more
+- **Rich custom layouts** per screen — not just a menu list but purpose-built panels for each screen type
+- **2D grid navigation** — arrow keys navigate spatially (rows × columns) on map, battle, catch, item select, team full, and main menu screens
+- **10 Hz refresh** with DOM hash caching — only re-parses when something actually changed
+- **Map screen**: team panel (3×2 with HP/types/items) · node graph · bag · boss info · node carousel
+- **Battle screen**: YOUR TEAM vs RIVAL side-by-side, each as a 3×2 grid with HP bars
+- **Main menu**: game mode cards · generation selector · starter picker — all keyboard navigable
+- **Pokémon swap** via the team panel grid (navigate with arrows, Enter to pick)
+- **Bag equip mode** — pick item from bag, apply to Pokémon
+- **Pokédex overlay** — search all 1350 species or browse by route/tower tier
 - Raw JSON viewer for full parsed game state
+- Auto-clicks starter select, badge screen, game over, and evolution screens
 - Launches Chrome automatically via `launcher.py`
 
 ## Requirements
@@ -40,17 +43,12 @@ Chrome must run with remote debugging enabled. `launcher.py` does this automatic
 ### Ubuntu 22.04
 
 ```bash
-# Install Chrome
 wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
 echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
 sudo apt update && sudo apt install -y google-chrome-stable
-
-# Install Python dependencies
 pip install playwright rich
 python -m playwright install chromium
 ```
-
-Then run normally — `launcher.py` will find Chrome automatically and use `~/.chrome-debug` as the profile directory.
 
 ## Usage
 
@@ -61,52 +59,67 @@ python interactor.py  # terminal UI only (Chrome must already be open on pokelik
 
 ## Terminal controls
 
+### Global
+
 | Key | Action |
 |-----|--------|
-| ↑ ↓ | Navigate menu |
+| ↑ ↓ | Navigate rows / move up-down |
+| ← → | Navigate columns / move left-right |
 | Enter | Execute selected item |
-| Letter shortcuts | Execute directly (N, Z, B, R, P, J, Q…) |
-| ◀ ▶ | Pick starter (on main menu) |
-| D | Open Pokédex overlay |
-| J | View raw parsed JSON |
+| Letter shortcuts | Execute directly (N, Z, B, P, J, Q…) |
 | P | Reload browser page |
-| R | Re-parse current screen |
-| Q / Esc | Quit |
+| J | View raw parsed JSON |
+| D | Open Pokédex overlay |
+| Q | Quit |
+| Esc | Cancel current mode (swap / item-pick on map) |
+
+### Grid navigation
+
+Most screens use spatial 2D navigation:
+
+- **Main menu** — ← → switches between the mode column and the gen/starter column; ↑ ↓ moves within each column; reach the bottom strip with ↓ from either column
+- **Map (normal)** — ← → cycles accessible nodes; ↓ enters the action strip; ↑ returns to nodes
+- **Map (swap / item-pick)** — the team panel becomes a 3×2 grid; ← → moves columns, ↑ ↓ moves rows, ↓ from last row enters the Cancel/Quit strip
+- **Battle** — ← → navigates the action strip
+- **Catch / Item select** — ← → moves between cards; ↓ enters strip; ↑ returns to cards
+- **Team full** — 2×3 grid of team members; ↓ from last row enters strip
+- **Starter / Wild Pokémon** — ← → also acts as ↑ ↓
 
 ## Pokédex overlay
 
 Press **D** from the main menu or map screen.
 
-**Search mode** — type any characters to filter all 1350 species by name. Each result shows types, normal-mode spawn locations, and battle tower tiers. Backspace to edit, ↑↓ to scroll.
+**Search mode** — type any characters to filter all 1350 species by name. Each result shows types, normal-mode spawn locations, and battle tower tiers. Backspace to edit, ↑ ↓ to scroll.
 
-**Route mode** — press **Tab** to switch. Use ◀▶ to cycle through every route and tower floor in play order; ↑↓ to scroll that location's Pokémon list. Tab again to return to search.
+**Route mode** — press **Tab** to switch. Use ← → to cycle through every route and tower floor in play order; ↑ ↓ to scroll that location's Pokémon list.
 
-Press **ESC** to exit the overlay.
+Press **Esc** to close the overlay.
 
 ## Screens implemented
 
-| Screen | Parsed data |
-|--------|-------------|
-| Main menu | Selected gen, available gens, logged-in user |
-| Starter select | Name, level, types, move for each starter |
-| Map | Stage/boss info, team HP/moves/types, bag items, badges, all map nodes with type and state |
-| Battle | Both teams with HP, active/fainted state, continue-ready detection |
-| Catch Pokémon | Choices with level, types, shiny/caught flags |
-| Item select | Item names and descriptions |
-| Item equip / Move tutor | Per-Pokémon equip or teach options |
-| Trade offer | Trade members with types and level |
-| Pokémon received | Name, level, types, move, shiny flag |
-| Champion | Win title, run count, full winning team stats |
-| Game over | Auto-clicks Try Again |
+| Screen | Custom layout | Parsed data |
+|--------|--------------|-------------|
+| Main menu | Mode cards + gen/starter column + strip | Selected gen, available gens, logged-in user |
+| Starter select | Horizontal cards | Name, level, types, move per starter |
+| Map | Team grid + graph + bag/boss + node strip | Stage/boss, team HP/moves/types, bag, badges, all nodes |
+| Battle | Two side-panels (3×2 each) + strip | Both teams: HP, active/fainted, continue-ready |
+| Catch Pokémon | Horizontal cards + strip | Choices: level, types, shiny/caught flags, stats, move |
+| Item select | Horizontal cards + strip | Item names and descriptions |
+| Item equip / Move tutor | Scrollable list | Per-Pokémon equip or teach options |
+| Trade offer | Default list | Trade members with types and level |
+| Pokémon received | Default list | Name, level, types, move, shiny flag |
+| Team full | 2×3 grid + strip | Incoming Pokémon + current team |
+| Champion | Default list | Win title, run count, full winning team |
+| Game over | — | Auto-clicks Try Again |
 
 ## Project structure
 
 ```
-launcher.py         # finds Chrome, launches with debug port, starts interactor
-browser.py          # CDP connection to open Chrome tab
-screen_detector.py  # identifies current screen by DOM fingerprint
-parsers/            # one parser per screen → returns state dict
-models/screens.py   # TypedDicts for each screen's state
-interactor.py       # Rich TUI — render loop, menu builders, Pokédex overlay
-config.py           # CDP port, target URL
+launcher.py           # finds Chrome, launches with debug port, starts interactor
+browser.py            # CDP connection to open Chrome tab
+screen_detector.py    # identifies current screen — single JS round-trip
+parsers/              # one parser per screen, each using minimal CDP calls
+models/screens.py     # TypedDicts for each screen's state
+interactor.py         # Textual TUI — widgets, layouts, grid nav, Pokédex overlay
+config.py             # CDP port, target URL
 ```

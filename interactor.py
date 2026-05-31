@@ -392,27 +392,37 @@ def build_main_menu_items(
             return f"Switched to Gen {ROMAN.get(roman, roman)}"
         return _action
 
-    gens = state.get("available_gens", [])
+    gens        = state.get("available_gens", [])
     selected_gen = state.get("selected_gen")
+    gen          = selected_gen or "I"
+    starters     = get_starters(gen)
 
+    # Left column: game modes
     items: list[MenuItem] = [
         MenuItem("Normal Mode",  "N", click_btn("Normal Mode")),
         MenuItem("Nuzlocke",     "Z", click_btn("Nuzlocke")),
         MenuItem("Battle Tower", "B", click_btn("Battle Tower")),
     ]
+
+    # Right column: gens
     for g in gens:
         num = ROMAN.get(g, g)
-        items.append(MenuItem(f"Switch to Gen {num}", num, click_gen(g), enabled=(g != selected_gen)))
+        items.append(MenuItem(f"Gen {g}", num, click_gen(g), enabled=(g != selected_gen)))
+
+    # Right column: starters (action sets selected_starter via special return value)
+    for i, (letter, _color) in enumerate(starters):
+        def set_starter(idx=i):
+            return f"SET_STARTER:{idx}"
+        items.append(MenuItem(f"Starter {letter}", letter.lower(), set_starter,
+                              enabled=(i != selected_starter)))
 
     def reload_page():
         page.reload()
         return "Page reloaded."
 
-    def open_dex_main():
-        return "SHOW_POKEDEX"
-
+    # Strip
     items += [
-        MenuItem("Pokédex",     "D", open_dex_main),
+        MenuItem("Pokédex",     "D", lambda: "SHOW_POKEDEX"),
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -535,14 +545,13 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         return items
 
     if swap_source is not None and isinstance(swap_source[0], int):
-        src_idx  = swap_source[0]
-        items    = []
-        dest_num = 0
+        src_idx = swap_source[0]
+        items   = []
         for i, p in enumerate(team):
+            shortcut = digit_shortcuts[i] if i < len(digit_shortcuts) else "?"
             if i == src_idx:
+                items.append(MenuItem(p["name"], shortcut, lambda: None, enabled=False))
                 continue
-            shortcut = digit_shortcuts[dest_num] if dest_num < len(digit_shortcuts) else "?"
-            dest_num += 1
             def do_swap(src=src_idx, dst=i):
                 page.locator(".map-panel-left .team-slot").nth(src).drag_to(
                     page.locator(".map-panel-left .team-slot").nth(dst)
@@ -1349,6 +1358,247 @@ class BattlePanel(Widget):
 
 
 # ---------------------------------------------------------------------------
+# Main menu screen widgets
+# ---------------------------------------------------------------------------
+
+_MODE_DESC = {
+    "Normal Mode":  "Classic roguelike, no restrictions",
+    "Nuzlocke":     "Fainted Pokémon are permanently lost",
+    "Battle Tower": "Consecutive battle challenge",
+}
+
+
+class GameModeCard(Widget):
+    """One game-mode option card — Normal / Nuzlocke / Battle Tower."""
+
+    DEFAULT_CSS = """
+    GameModeCard {
+        width: 1fr;
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 2;
+        layout: vertical;
+        margin-bottom: 1;
+    }
+    GameModeCard:last-of-type { margin-bottom: 0; }
+    GameModeCard.selected { border: round #f5c518; background: #16140a; }
+    .gmc-row  { layout: horizontal; height: 1; }
+    .gmc-key  { width: 4; color: #f5c518; text-style: bold; content-align: center middle; }
+    .gmc-name { width: 1fr; color: #e8e8ff; text-style: bold; content-align: left middle; }
+    .gmc-desc { color: #555577; margin-top: 1; }
+    """
+
+    def __init__(self, item: MenuItem, is_selected: bool) -> None:
+        super().__init__()
+        self._item = item
+        if is_selected:
+            self.add_class("selected")
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="gmc-row"):
+            yield Label(f"[{self._item.shortcut}]", classes="gmc-key")
+            yield Label(self._item.label,            classes="gmc-name")
+        yield Label(_MODE_DESC.get(self._item.label, ""), classes="gmc-desc")
+
+    def set_selected(self, value: bool) -> None:
+        self.set_class(value, "selected")
+
+
+class RightColCard(Widget):
+    """Compact right-column card for gen/starter selection."""
+
+    DEFAULT_CSS = """
+    RightColCard {
+        width: 1fr;
+        height: 1fr;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 2;
+        layout: horizontal;
+        align: left middle;
+        margin-bottom: 1;
+    }
+    RightColCard:last-of-type { margin-bottom: 0; }
+    RightColCard.focused { border: round #f5c518; background: #16140a; }
+    RightColCard.active  { border: round #00d7d7; background: #001825; }
+    .rcc-key   { width: 4; color: #f5c518; text-style: bold; content-align: center middle; }
+    .rcc-label { width: 1fr; content-align: left middle; }
+    """
+
+    def __init__(self, shortcut: str, label: str, label_markup: str = "",
+                 is_focused: bool = False, is_active: bool = False) -> None:
+        super().__init__()
+        self._shortcut    = shortcut
+        self._label       = label
+        self._label_markup = label_markup
+        if is_focused: self.add_class("focused")
+        if is_active:  self.add_class("active")
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"[{self._shortcut}]", classes="rcc-key")
+        markup = self._label_markup or self._label
+        yield Label(Text.from_markup(markup), classes="rcc-label")
+
+    def set_focused(self, value: bool) -> None:
+        self.set_class(value, "focused")
+
+    def set_active(self, value: bool) -> None:
+        self.set_class(value, "active")
+
+    def update_label(self, markup: str) -> None:
+        try:
+            self.query_one(".rcc-label", Label).update(Text.from_markup(markup))
+        except Exception:
+            pass
+
+
+class MainMenuPanel(Widget):
+    """Rich main-menu layout: mode cards (left) + right column (gens+starters) + strip."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    MainMenuPanel {
+        layout: vertical;
+        height: 1fr;
+        padding: 0 1 1 1;
+    }
+    #mm-body  { layout: horizontal; height: 1fr; }
+    #mm-modes { width: 1fr; height: 1fr; layout: vertical; margin-right: 1; }
+    #mm-right {
+        width: 28;
+        height: 1fr;
+        layout: vertical;
+    }
+    #mm-user {
+        height: auto;
+        border: round #2a2a4a;
+        background: #0d0d1e;
+        padding: 0 2;
+        margin-bottom: 1;
+        border-title-color: #555577;
+        border-title-style: bold;
+    }
+    #mm-right-items { height: 1fr; layout: vertical; }
+    #mm-strip {
+        height: 5;
+        layout: horizontal;
+        padding: 0 1;
+        border-top: solid #1e1e3a;
+        align: left middle;
+    }
+    #mm-strip ActionItem       { width: auto; min-width: 12; margin-right: 1; }
+    #mm-strip ActionItem > .item-label { width: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="mm-body"):
+            with Vertical(id="mm-modes"):
+                pass
+            with Vertical(id="mm-right"):
+                yield Static("", id="mm-user")
+                yield Vertical(id="mm-right-items")
+        yield Horizontal(id="mm-strip")
+
+    def rebuild(self, state: dict, items: list, selected: int,
+                selected_starter: int, starters: list) -> None:
+        n_modes    = 3
+        gens       = state.get("available_gens", [])
+        n_gens     = len(gens)
+        n_starters = len(starters)
+        active_gen = state.get("selected_gen")
+
+        # ── Mode cards (left) ─────────────────────────────────────────
+        modes_col  = self.query_one("#mm-modes")
+        mode_items = items[:n_modes]
+        existing   = list(modes_col.query(GameModeCard))
+        if len(existing) == len(mode_items):
+            for i, card in enumerate(existing):
+                card.set_selected(i == selected)
+        else:
+            modes_col.query(GameModeCard).remove()
+            modes_col.mount(*[
+                GameModeCard(item, i == selected)
+                for i, item in enumerate(mode_items)
+            ])
+
+        # ── User panel ────────────────────────────────────────────────
+        user  = state.get("logged_in_user") or "not logged in"
+        u_pan = self.query_one("#mm-user", Static)
+        u_pan.border_title = "PLAYER"
+        u_pan.update(Text.from_markup(
+            f"[dim]logged in as[/]\n[bold #00e676]{user}[/]"
+        ))
+
+        # ── Right column: gens then starters (vertical) ───────────────
+        right_col  = self.query_one("#mm-right-items")
+        n_right    = n_gens + n_starters
+        right_items = items[n_modes: n_modes + n_right]
+        existing_rc = list(right_col.query(RightColCard))
+
+        def gen_markup(g: str) -> str:
+            label = f"GEN {g}"
+            return f"[bold #00d7d7]{label}[/]" if g == active_gen else f"[#e8e8ff]{label}[/]"
+
+        def starter_markup(letter: str, color: str, is_active: bool) -> str:
+            if is_active:
+                return f"[bold {color}]★  {letter}[/]"
+            return f"[#666688]{letter}[/]"
+
+        if len(existing_rc) == n_right:
+            for i, card in enumerate(existing_rc):
+                is_focused = (n_modes + i) == selected
+                card.set_focused(is_focused)
+                if i < n_gens:
+                    g = gens[i]
+                    card.set_active(g == active_gen and not is_focused)
+                    card.update_label(gen_markup(g))
+                else:
+                    si = i - n_gens
+                    letter, color = starters[si]
+                    is_sel = si == selected_starter
+                    card.set_active(is_sel and not is_focused)
+                    card.update_label(starter_markup(letter, color, is_sel))
+        else:
+            right_col.query(RightColCard).remove()
+            cards: list = []
+            for i in range(n_gens):
+                g         = gens[i]
+                is_focused = (n_modes + i) == selected
+                cards.append(RightColCard(
+                    ROMAN.get(g, g), f"Gen {g}", gen_markup(g),
+                    is_focused=is_focused, is_active=(g == active_gen and not is_focused),
+                ))
+            for si, (letter, color) in enumerate(starters):
+                i         = n_gens + si
+                is_focused = (n_modes + i) == selected
+                is_sel    = si == selected_starter
+                cards.append(RightColCard(
+                    letter.lower(), f"Starter {letter}",
+                    starter_markup(letter, color, is_sel),
+                    is_focused=is_focused, is_active=(is_sel and not is_focused),
+                ))
+            right_col.mount(*cards)
+
+        # ── Strip ─────────────────────────────────────────────────────
+        strip_offset = n_modes + n_right
+        strip_items  = items[strip_offset:]
+        strip        = self.query_one("#mm-strip")
+        existing_ai  = list(strip.query(ActionItem))
+        sel_in_strip = selected - strip_offset
+        if len(existing_ai) == len(strip_items):
+            for i, w in enumerate(existing_ai):
+                w.refresh_state(strip_items[i], i == sel_in_strip)
+        else:
+            strip.query(ActionItem).remove()
+            strip.mount(*[
+                ActionItem(item, i == sel_in_strip)
+                for i, item in enumerate(strip_items)
+            ])
+
+
+# ---------------------------------------------------------------------------
 # Item select screen widgets
 # ---------------------------------------------------------------------------
 
@@ -1685,11 +1935,12 @@ class TeamCard(Widget):
         padding: 0 1;
         layout: vertical;
     }
-    TeamCard.hp-ok    { border: round #00e676; }
-    TeamCard.hp-mid   { border: round #f5c518; }
-    TeamCard.hp-low   { border: round #ff1744; }
-    TeamCard.swapping { border: round #00d7d7; background: #001825; }
-    TeamCard.empty    { border: round #1a1a2e; background: #090912; }
+    TeamCard.hp-ok        { border: round #00e676; }
+    TeamCard.hp-mid       { border: round #f5c518; }
+    TeamCard.hp-low       { border: round #ff1744; }
+    TeamCard.swapping     { border: round #00d7d7; background: #001825; }
+    TeamCard.empty        { border: round #1a1a2e; background: #090912; }
+    TeamCard.grid-selected { border: round #f5c518; background: #16140a; }
 
     .tc-header { layout: horizontal; height: 1; align: left middle; }
     .tc-slot   { width: 3; color: #555577; content-align: left middle; }
@@ -1752,6 +2003,9 @@ class TeamCard(Widget):
         if held:
             yield Label(f"◆ {held}", classes="tc-item")
 
+    def set_selected(self, value: bool) -> None:
+        self.set_class(value, "grid-selected")
+
 
 class TeamGridPanel(Widget):
     """Left panel — 2×3 grid of TeamCards filling width and height equally."""
@@ -1793,6 +2047,10 @@ class TeamGridPanel(Widget):
                 if j == 0:
                     cards.append(Label(" ", classes="tg-gap"))
             row.mount(*cards)
+
+    def update_selected(self, slot: int | None) -> None:
+        for card in self.query(TeamCard):
+            card.set_selected(card._slot == slot)
 
 
 class MapGraphWidget(Static):
@@ -2571,6 +2829,7 @@ class PokelikeApp(App):
         self._last_battle_team_key  = None
         self._last_team_full_key    = None
         self.map_carousel_idx = 0
+        self._force_parse           = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -2596,6 +2855,7 @@ class PokelikeApp(App):
         yield BattlePanel(id="battle-panel")
         yield ItemSelectPanel(id="item-select-panel")
         yield TeamFullPanel(id="team-full-panel")
+        yield MainMenuPanel(id="main-menu-panel")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2605,6 +2865,7 @@ class PokelikeApp(App):
         self.query_one("#battle-panel").display       = False
         self.query_one("#item-select-panel").display  = False
         self.query_one("#team-full-panel").display    = False
+        self.query_one("#main-menu-panel").display    = False
         t = threading.Thread(target=self._browser_loop, daemon=True)
         t.start()
 
@@ -2644,8 +2905,9 @@ class PokelikeApp(App):
                             prev       = self.game_screen
                             new_screen = detect(page)
                             dom_hash   = _dom_hash(page, new_screen)
-                            if dom_hash and dom_hash == last_dom_hash and new_screen == prev:
+                            if dom_hash and dom_hash == last_dom_hash and new_screen == prev and not self._force_parse:
                                 continue
+                            self._force_parse = False
                             last_dom_hash = dom_hash
                             p          = PARSER_MAP.get(new_screen)
                             new_state  = p.parse(page) if p else _unknown_state(page, new_screen)
@@ -2751,7 +3013,8 @@ class PokelikeApp(App):
         is_battle      = self.game_screen == ScreenType.BATTLE
         is_item_select = self.game_screen == ScreenType.ITEM_SELECT
         is_team_full   = self.game_screen == ScreenType.TEAM_FULL
-        is_custom      = is_map or is_catch or is_battle or is_item_select or is_team_full
+        is_main_menu   = self.game_screen == ScreenType.MAIN_MENU
+        is_custom      = is_map or is_catch or is_battle or is_item_select or is_team_full or is_main_menu
         try:
             self.query_one("#default-layout").display      = not is_custom
             self.query_one("#map-layout").display          = is_map
@@ -2759,16 +3022,19 @@ class PokelikeApp(App):
             self.query_one("#battle-panel").display        = is_battle
             self.query_one("#item-select-panel").display   = is_item_select
             self.query_one("#team-full-panel").display     = is_team_full
+            self.query_one("#main-menu-panel").display     = is_main_menu
         except Exception:
             pass
 
         if is_map:
-            swap_val   = self.swap_source[0]
-            team       = self.state.get("team", [])
-            nodes_all  = self.state.get("nodes", [])
-            accessible = [n for n in nodes_all if n["accessible"]]
-            n_nodes    = len(accessible)
-            is_special = swap_val is not None or self.bag_mode[0]
+            swap_val      = self.swap_source[0]
+            team          = self.state.get("team", [])
+            nodes_all     = self.state.get("nodes", [])
+            accessible    = [n for n in nodes_all if n["accessible"]]
+            n_nodes       = len(accessible)
+            is_swap_pick  = swap_val in ("swap", "item_pick") or isinstance(swap_val, int)
+            is_bag_active = self.bag_mode[0]
+            is_special    = is_swap_pick or is_bag_active
 
             # Team grid
             team_key = tuple(
@@ -2781,6 +3047,13 @@ class PokelikeApp(App):
                     self.query_one(TeamGridPanel).rebuild(team, swap_val)
                 except Exception:
                     pass
+
+            # Grid-selected highlight (in-place, no remount)
+            try:
+                focused = self.selected if is_swap_pick and self.selected < len(team) else None
+                self.query_one(TeamGridPanel).update_selected(focused)
+            except Exception:
+                pass
 
             # Bag
             try:
@@ -2880,6 +3153,27 @@ class PokelikeApp(App):
                     pass
             return
 
+        elif is_main_menu:
+            items_key = (
+                tuple(f"{i.label}:{i.enabled}" for i in self._items),
+                self.selected,
+                self.selected_starter,
+                self.state.get("selected_gen"),
+                self.state.get("logged_in_user"),
+            )
+            if items_key != self._last_items_key:
+                self._last_items_key = items_key
+                gen     = self.state.get("selected_gen") or "I"
+                starters = get_starters(gen)
+                try:
+                    self.query_one(MainMenuPanel).rebuild(
+                        self.state, self._items, self.selected,
+                        self.selected_starter, starters,
+                    )
+                except Exception:
+                    pass
+            return
+
         elif is_team_full:
             team     = self.state.get("team", [])
             incoming = self.state.get("incoming", [])
@@ -2962,27 +3256,31 @@ class PokelikeApp(App):
             self._last_items_key = items_key
             if is_map:
                 # Strip: util items (everything after node items)
-                if is_special:
-                    util_items = self._items   # bag/swap: all items in strip
-                    n_nodes    = 0
+                if is_swap_pick:
+                    util_items   = self._items[len(team):]  # only Cancel/Quit
+                    strip_offset = len(team)
+                elif is_bag_active:
+                    util_items   = self._items              # all bag items in strip
+                    strip_offset = 0
                 else:
-                    util_items = self._items[n_nodes:]
+                    util_items   = self._items[n_nodes:]
+                    strip_offset = n_nodes
                 try:
                     strip = self.query_one("#map-strip", Horizontal)
                     existing = list(strip.query(ActionItem))
+                    sel_in_strip = self.selected - strip_offset
                     if len(existing) == len(util_items):
                         for i, w in enumerate(existing):
-                            w.refresh_state(util_items[i], i == (self.selected - n_nodes))
+                            w.refresh_state(util_items[i], i == sel_in_strip)
                     else:
                         strip.query(ActionItem).remove()
                         strip.mount(*[
-                            ActionItem(item, i == (self.selected - n_nodes))
+                            ActionItem(item, i == sel_in_strip)
                             for i, item in enumerate(util_items)
                         ])
-                    sel_idx = self.selected - n_nodes
                     widgets = list(strip.query(ActionItem))
-                    if 0 <= sel_idx < len(widgets):
-                        widgets[sel_idx].scroll_visible(animate=False)
+                    if 0 <= sel_in_strip < len(widgets):
+                        widgets[sel_in_strip].scroll_visible(animate=False)
                 except Exception:
                     pass
             else:
@@ -3018,6 +3316,9 @@ class PokelikeApp(App):
         key   = event.key
         items = self._items
         if not items:
+            return
+        if self.game_screen == ScreenType.MAIN_MENU and key in ("up", "down", "left", "right"):
+            self._main_menu_nav(key)
             return
         if self.game_screen == ScreenType.TEAM_FULL and key in ("up", "down", "left", "right"):
             self._team_full_nav(key)
@@ -3081,11 +3382,41 @@ class PokelikeApp(App):
                         break
 
     def _map_nav(self, direction: str) -> None:
-        items     = self._items
-        n_nodes   = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
-        sv        = self.swap_source[0]
-        in_pick   = sv in ("swap", "item_pick") or isinstance(sv, int) or self.bag_mode[0]
-        if in_pick or n_nodes == 0:
+        items        = self._items
+        n_nodes      = sum(1 for n in self.state.get("nodes", []) if n["accessible"])
+        sv           = self.swap_source[0]
+        is_swap_pick = sv in ("swap", "item_pick") or isinstance(sv, int)
+        is_bag_active = self.bag_mode[0]
+
+        if is_swap_pick:
+            n_team   = len(self.state.get("team", []))
+            n_strip  = max(1, len(items) - n_team)
+            in_strip = self.selected >= n_team
+            strip_idx = self.selected - n_team if in_strip else 0
+            col      = self.selected % 2 if not in_strip else min(strip_idx, 1)
+            row      = self.selected // 2 if not in_strip else 3
+            last_row = (n_team - 1) // 2
+
+            if direction == "right":
+                self.selected = (n_team + (strip_idx + 1) % n_strip) if in_strip else row * 2 + (col + 1) % 2
+            elif direction == "left":
+                self.selected = (n_team + (strip_idx - 1) % n_strip) if in_strip else row * 2 + (col - 1) % 2
+            elif direction == "down":
+                if in_strip:          self.selected = 0
+                elif row >= last_row: self.selected = n_team
+                else:                 self.selected = min((row + 1) * 2 + col, n_team - 1)
+            elif direction == "up":
+                if in_strip:
+                    target = last_row * 2 + min(strip_idx, 1)
+                    self.selected = min(target, n_team - 1)
+                elif row == 0:  self.selected = n_team + n_strip - 1
+                else:           self.selected = (row - 1) * 2 + col
+
+            self.selected = max(0, min(self.selected, len(items) - 1))
+            self._rebuild()
+            return
+
+        if is_bag_active or n_nodes == 0:
             delta = -1 if direction in ("up", "left") else 1
             self.selected = (self.selected + delta) % len(items)
             self._rebuild()
@@ -3143,6 +3474,52 @@ class PokelikeApp(App):
         self.selected = max(0, min(self.selected, len(items) - 1))
         self._rebuild()
 
+    def _main_menu_nav(self, direction: str) -> None:
+        items      = self._items
+        n_left     = 3   # Normal Mode, Nuzlocke, Battle Tower
+        gens       = self.state.get("available_gens", [])
+        starters   = get_starters(self.state.get("selected_gen") or "I")
+        n_right    = len(gens) + len(starters)
+        strip_start = n_left + n_right
+        n_strip    = max(1, len(items) - strip_start)
+        sel        = self.selected
+
+        in_left  = 0 <= sel < n_left
+        in_right = n_left <= sel < strip_start
+        in_strip = sel >= strip_start
+
+        left_row  = sel
+        right_row = sel - n_left
+        strip_idx = sel - strip_start
+
+        if direction == "right":
+            if in_left:
+                self.selected = n_left + min(left_row, n_right - 1)
+            elif in_strip:
+                self.selected = strip_start + (strip_idx + 1) % n_strip
+        elif direction == "left":
+            if in_right:
+                self.selected = min(right_row, n_left - 1)
+            elif in_strip:
+                self.selected = strip_start + (strip_idx - 1) % n_strip
+        elif direction == "down":
+            if in_left:
+                self.selected = left_row + 1 if left_row < n_left - 1 else strip_start
+            elif in_right:
+                self.selected = n_left + right_row + 1 if right_row < n_right - 1 else strip_start
+            elif in_strip:
+                self.selected = 0
+        elif direction == "up":
+            if in_left:
+                self.selected = left_row - 1 if left_row > 0 else strip_start + n_strip - 1
+            elif in_right:
+                self.selected = n_left + right_row - 1 if right_row > 0 else strip_start + n_strip - 1
+            elif in_strip:
+                self.selected = n_left - 1
+
+        self.selected = max(0, min(self.selected, len(items) - 1))
+        self._rebuild()
+
     def _team_full_nav(self, direction: str) -> None:
         items   = self._items
         n_team  = len(self.state.get("team", []))   # 6
@@ -3192,9 +3569,16 @@ class PokelikeApp(App):
         elif result == "SHOW_JSON":
             state_json = json.dumps(self.state, indent=2)
             self.call_from_thread(self.push_screen, JsonScreen(state_json))
+        elif isinstance(result, str) and result.startswith("SET_STARTER:"):
+            idx = int(result.split(":")[1])
+            def _apply(i=idx):
+                self.selected_starter = i
+                self._rebuild()
+            self.call_from_thread(_apply)
         else:
-            # For state-changing actions (cancel, swap mode enter, etc.) rebuild
-            # immediately instead of waiting for the next 0.5 s auto-refresh.
+            # Force a fresh parse on the next browser loop cycle so state-changing
+            # actions (swap, equip, etc.) are reflected even if the DOM hash matches.
+            self._force_parse = True
             self.call_from_thread(self._rebuild)
 
 
