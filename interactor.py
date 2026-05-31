@@ -1767,7 +1767,11 @@ class ItemSelectPanel(Widget):
         cards_row = self.query_one("#item-cards")
         existing  = list(cards_row.query(ItemSelectCard))
 
-        if len(existing) == len(choices):
+        same_data = (
+            len(existing) == len(choices)
+            and all(e._choice.get("name") == c.get("name") for e, c in zip(existing, choices))
+        )
+        if same_data:
             for i, card in enumerate(existing):
                 card.set_selected(i == selected)
         else:
