@@ -26,9 +26,14 @@ class PokemonReceivedParser(AbstractParser):
             const is_shiny  = !!card.querySelector('.poke-sprite.shiny')
             const is_caught = !!card.querySelector('.dex-caught-badge')
 
+            const buttons = Array.from(document.querySelectorAll('.btn-primary, .btn-secondary'))
+                .filter(b => b.getBoundingClientRect().width > 0)
+                .map(b => b.textContent.trim())
+
             return {
                 screen: 'pokemon_received',
                 title,
+                buttons,
                 pokemon: { name, level, types, hp, move, move_type: moveType,
                            move_power: movePw, stats, is_shiny, is_caught }
             }

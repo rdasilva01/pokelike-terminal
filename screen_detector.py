@@ -35,10 +35,10 @@ def detect(page: Page) -> ScreenType:
             if (vis('.gameover-title'))     return 'GAME_OVER'
             if (vis('.swap-prompt'))        return 'TEAM_FULL'
             if (vis('.battle-header'))      return 'BATTLE'
+            if (vis('.shiny-title'))        return 'POKEMON_RECEIVED'
             if (vis('.poke-choice-wrap'))   return 'CATCH_POKEMON'
             if (vis('.item-equip-overlay')) return 'ITEM_EQUIP'
             if (vis('.trade-member-row'))   return 'TRADE_OFFER'
-            if (vis('.shiny-title'))        return 'POKEMON_RECEIVED'
             if (vis('.item-card'))          return 'ITEM_SELECT'
             const btnsAll = Array.from(document.querySelectorAll('.btn-primary'))
             if (btnsAll.some(b => b.textContent.includes('Next Map') && b.getBoundingClientRect().width > 0)) return 'BADGE_OBTAINED'

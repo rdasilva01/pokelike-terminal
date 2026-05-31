@@ -475,7 +475,9 @@ NODE_TYPE_LABEL = {
 
 def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: int,
                     swap_source=None, bag_mode=None,
-                    utils_mode=None, level_path_on=None) -> list[MenuItem]:
+                    utils_mode=None, level_path_on=None,
+                    follow_path_on=None, prioritize_catch_on=None,
+                    prioritize_heal_on=None, autoswap_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -494,14 +496,33 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
 
     # ── utils sub-menu ────────────────────────────────────────────────
     if utils_mode is not None and utils_mode[0]:
-        lp_on    = level_path_on is not None and level_path_on[0]
-        lp_label = "Level Path  [bold #00e676]ON[/]" if lp_on else "Level Path  [dim]OFF[/]"
+        lp_on  = level_path_on       is not None and level_path_on[0]
+        fp_on  = follow_path_on      is not None and follow_path_on[0]
+        as_on  = autoswap_on         is not None and autoswap_on[0]
+        pc_on  = prioritize_catch_on is not None and prioritize_catch_on[0]
+        ph_on  = prioritize_heal_on  is not None and prioritize_heal_on[0]
+        def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
         def toggle_lp():
-            if level_path_on is not None:
-                level_path_on[0] = not level_path_on[0]
+            if level_path_on is not None: level_path_on[0] = not level_path_on[0]
+            return "Level Path toggled"
+        def toggle_fp():
+            if follow_path_on is not None: follow_path_on[0] = not follow_path_on[0]
+            return "FOLLOW_PATH_TOGGLED"
+        def toggle_as():
+            if autoswap_on is not None: autoswap_on[0] = not autoswap_on[0]
+            return "Level Path toggled"
+        def toggle_pc():
+            if prioritize_catch_on is not None: prioritize_catch_on[0] = not prioritize_catch_on[0]
+            return "Level Path toggled"
+        def toggle_ph():
+            if prioritize_heal_on is not None: prioritize_heal_on[0] = not prioritize_heal_on[0]
             return "Level Path toggled"
         return [
-            MenuItem(lp_label, "U", toggle_lp),
+            MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
+            MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
+            MenuItem(_lbl("Autoswap",          as_on), "A", toggle_as),
+            MenuItem(_lbl("Prio. First Catch", pc_on), "C", toggle_pc),
+            MenuItem(_lbl("Prio. Heal",        ph_on), "H", toggle_ph),
             MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -678,24 +699,34 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
 
 
 def build_pokemon_received_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
-    def do_continue():
-        page.evaluate("""() => {
-            const btn = Array.from(document.querySelectorAll('.screen.active .btn-primary'))
-                .find(b => b.textContent.trim() === 'Continue')
-            if (btn) btn.click()
-        }""")
-        return "Continuing..."
+    buttons = state.get("buttons", ["Continue"])
+
+    def click_btn(text):
+        def _action():
+            page.evaluate("""(t) => {
+                const btn = Array.from(document.querySelectorAll('.btn-primary, .btn-secondary'))
+                    .filter(b => b.getBoundingClientRect().width > 0)
+                    .find(b => b.textContent.trim() === t)
+                if (btn) btn.click()
+            }""", text)
+            return f"Clicked: {text}"
+        return _action
 
     def reload_page():
         page.reload()
         return "Page reloaded."
 
-    return [
-        MenuItem("Continue",    "C", do_continue),
+    shortcuts = "CTSK"
+    items = [
+        MenuItem(btn_text, shortcuts[i] if i < len(shortcuts) else "?", click_btn(btn_text))
+        for i, btn_text in enumerate(buttons)
+    ]
+    items += [
         MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
     ]
+    return items
 
 
 def build_trade_offer_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
@@ -1957,18 +1988,81 @@ _CONNECTORS = _lattice_connectors()
 
 _NODE_SCORE: dict[str, float] = {
     "trainer": 2.0, "wild_encounter": 1.0, "mystery": 0.5,
+    "move_tutor": 0.25, "item": 0.1,
+}
+
+_TYPE_CHART: dict[str, dict[str, float]] = {
+    "Normal":   {"Normal":1,"Fire":1,"Water":1,"Electric":1,"Grass":1,"Ice":1,"Fighting":1,"Poison":1,"Ground":1,"Flying":1,"Psychic":1,"Bug":1,"Rock":0.5,"Ghost":0,"Dragon":1,"Dark":1,"Steel":0.5},
+    "Fire":     {"Normal":1,"Fire":0.5,"Water":0.5,"Electric":1,"Grass":2,"Ice":2,"Fighting":1,"Poison":1,"Ground":1,"Flying":1,"Psychic":1,"Bug":2,"Rock":0.5,"Ghost":1,"Dragon":0.5,"Dark":1,"Steel":2},
+    "Water":    {"Normal":1,"Fire":2,"Water":0.5,"Electric":1,"Grass":0.5,"Ice":1,"Fighting":1,"Poison":1,"Ground":2,"Flying":1,"Psychic":1,"Bug":1,"Rock":2,"Ghost":1,"Dragon":0.5,"Dark":1,"Steel":1},
+    "Electric": {"Normal":1,"Fire":1,"Water":2,"Electric":0.5,"Grass":0.5,"Ice":1,"Fighting":1,"Poison":1,"Ground":0,"Flying":2,"Psychic":1,"Bug":1,"Rock":1,"Ghost":1,"Dragon":0.5,"Dark":1,"Steel":1},
+    "Grass":    {"Normal":1,"Fire":0.5,"Water":2,"Electric":1,"Grass":0.5,"Ice":1,"Fighting":1,"Poison":0.5,"Ground":2,"Flying":0.5,"Psychic":1,"Bug":0.5,"Rock":2,"Ghost":1,"Dragon":0.5,"Dark":1,"Steel":0.5},
+    "Ice":      {"Normal":1,"Fire":0.5,"Water":0.5,"Electric":1,"Grass":2,"Ice":0.5,"Fighting":1,"Poison":1,"Ground":2,"Flying":2,"Psychic":1,"Bug":1,"Rock":1,"Ghost":1,"Dragon":2,"Dark":1,"Steel":0.5},
+    "Fighting": {"Normal":2,"Fire":1,"Water":1,"Electric":1,"Grass":1,"Ice":2,"Fighting":1,"Poison":0.5,"Ground":1,"Flying":0.5,"Psychic":0.5,"Bug":0.5,"Rock":2,"Ghost":0,"Dragon":1,"Dark":2,"Steel":2},
+    "Poison":   {"Normal":1,"Fire":1,"Water":1,"Electric":1,"Grass":2,"Ice":1,"Fighting":1,"Poison":0.5,"Ground":0.5,"Flying":1,"Psychic":1,"Bug":1,"Rock":0.5,"Ghost":0.5,"Dragon":1,"Dark":1,"Steel":0},
+    "Ground":   {"Normal":1,"Fire":2,"Water":1,"Electric":2,"Grass":0.5,"Ice":1,"Fighting":1,"Poison":2,"Ground":1,"Flying":0,"Psychic":1,"Bug":0.5,"Rock":2,"Ghost":1,"Dragon":1,"Dark":1,"Steel":2},
+    "Flying":   {"Normal":1,"Fire":1,"Water":1,"Electric":0.5,"Grass":2,"Ice":1,"Fighting":2,"Poison":1,"Ground":1,"Flying":1,"Psychic":1,"Bug":2,"Rock":0.5,"Ghost":1,"Dragon":1,"Dark":1,"Steel":0.5},
+    "Psychic":  {"Normal":1,"Fire":1,"Water":1,"Electric":1,"Grass":1,"Ice":1,"Fighting":2,"Poison":2,"Ground":1,"Flying":1,"Psychic":0.5,"Bug":1,"Rock":1,"Ghost":1,"Dragon":1,"Dark":0,"Steel":0.5},
+    "Bug":      {"Normal":1,"Fire":0.5,"Water":1,"Electric":1,"Grass":2,"Ice":1,"Fighting":0.5,"Poison":0.5,"Ground":1,"Flying":0.5,"Psychic":2,"Bug":1,"Rock":1,"Ghost":0.5,"Dragon":1,"Dark":2,"Steel":0.5},
+    "Rock":     {"Normal":1,"Fire":2,"Water":1,"Electric":1,"Grass":1,"Ice":2,"Fighting":0.5,"Poison":1,"Ground":0.5,"Flying":2,"Psychic":1,"Bug":2,"Rock":1,"Ghost":1,"Dragon":1,"Dark":1,"Steel":0.5},
+    "Ghost":    {"Normal":0,"Fire":1,"Water":1,"Electric":1,"Grass":1,"Ice":1,"Fighting":1,"Poison":1,"Ground":1,"Flying":1,"Psychic":2,"Bug":1,"Rock":1,"Ghost":2,"Dragon":1,"Dark":0.5,"Steel":0.5},
+    "Dragon":   {"Normal":1,"Fire":1,"Water":1,"Electric":1,"Grass":1,"Ice":1,"Fighting":1,"Poison":1,"Ground":1,"Flying":1,"Psychic":1,"Bug":1,"Rock":1,"Ghost":1,"Dragon":2,"Dark":1,"Steel":0.5},
+    "Dark":     {"Normal":1,"Fire":1,"Water":1,"Electric":1,"Grass":1,"Ice":1,"Fighting":0.5,"Poison":1,"Ground":1,"Flying":1,"Psychic":2,"Bug":1,"Rock":1,"Ghost":2,"Dragon":1,"Dark":0.5,"Steel":0.5},
+    "Steel":    {"Normal":1,"Fire":0.5,"Water":0.5,"Electric":0.5,"Grass":1,"Ice":2,"Fighting":1,"Poison":1,"Ground":1,"Flying":1,"Psychic":1,"Bug":1,"Rock":2,"Ghost":1,"Dragon":1,"Dark":1,"Steel":0.5},
 }
 
 def _node_score(node_type: str) -> float:
     return _NODE_SCORE.get(node_type, 0.0)
 
-def _compute_best_level_path(nodes: list, start_idx: int) -> list[int]:
+def _autoswap_score(pokemon_types: list, poke_type: str) -> float:
+    if not poke_type or "/" in poke_type:
+        return 1.0
+    attack = (pokemon_types[0] if pokemon_types else "").capitalize()
+    defend = poke_type.strip().capitalize()
+    return _TYPE_CHART.get(attack, {}).get(defend, 1.0)
+
+
+def _compute_autoswap_order(team: list, poke_type: str) -> list[int]:
+    scored = [
+        (i, _autoswap_score(p.get("types", []), poke_type), p.get("level") or 0)
+        for i, p in enumerate(team)
+    ]
+    scored.sort(key=lambda x: (-x[1], -x[2]))
+    return [i for i, _, _ in scored]
+
+
+def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool):
+    """Return an extra_score(idx, node) function for the active priority toggles."""
+    if not prioritize_catch and not prioritize_heal:
+        return None
+    def _extra(idx: int, node: dict) -> float:
+        bonus = 0.0
+        if prioritize_catch and idx == 1:
+            bonus += 10.0
+        if prioritize_heal and node.get("type") == "pokecenter":
+            bonus += 10.0
+        return bonus
+    return _extra
+
+
+def _compute_best_level_path(nodes: list, start_idx: int,
+                             extra_score=None) -> list[int]:
+    """DFS from start_idx to boss, maximising score.
+    extra_score(node_idx, node_dict) -> float bonus added on top of _node_score."""
     children: dict[int, list[int]] = {}
     for _, _, _, top, bot in _CONNECTORS:
         children.setdefault(top, []).append(bot)
     boss_idx = next((i for i, n in enumerate(nodes) if n.get("type") == "boss"), len(nodes) - 1)
+
+    def node_val(idx: int) -> float:
+        if idx >= len(nodes):
+            return 0.0
+        base  = _node_score(nodes[idx].get("type", ""))
+        bonus = extra_score(idx, nodes[idx]) if extra_score else 0.0
+        return base + bonus
+
     best: list[int] = [start_idx]
-    best_score: list[float] = [_node_score(nodes[start_idx].get("type","")) if start_idx < len(nodes) else 0.0]
+    best_score: list[float] = [-float("inf")]
 
     def dfs(path: list[int], score: float) -> None:
         cur = path[-1]
@@ -1978,10 +2072,9 @@ def _compute_best_level_path(nodes: list, start_idx: int) -> list[int]:
                 best[:] = path
             return
         for child in children.get(cur, []):
-            ns = _node_score(nodes[child].get("type","")) if child < len(nodes) else 0.0
-            dfs(path + [child], score + ns)
+            dfs(path + [child], score + node_val(child))
 
-    dfs([start_idx], best_score[0])
+    dfs([start_idx], node_val(start_idx))
     return best
 
 
@@ -2893,10 +2986,15 @@ class PokelikeApp(App):
         self.selected_starter = 0
         self.swap_source     = [None]
         self.bag_mode        = [False]
-        self.utils_mode      = [False]
-        self.level_path_on   = [True]
+        self.utils_mode           = [False]
+        self.level_path_on        = [True]
+        self.follow_path_on       = [False]
+        self.autoswap_on          = [False]
+        self.prioritize_catch_on  = [False]
+        self.prioritize_heal_on   = [False]
         self.best_level_path = [[]]
-        self._last_level_path_key = None
+        self._last_level_path_key  = None
+        self._follow_last_accessible: frozenset = frozenset()
         self.flash_until     = 0.0
         self._items: list[MenuItem] = []
         self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -3050,9 +3148,52 @@ class PokelikeApp(App):
             self.selected = 0
             self.map_carousel_idx = 0
             self._handle_screen_change_ui(prev, new_screen)
+
+        # Path logic — runs before _rebuild() so cursor is correct on first render
+        _target_node_idx = None
+        _acc_list: list[int] = []
+        _nodes: list = []
+        if (new_screen == ScreenType.MAP
+                and not self.utils_mode[0]
+                and not self.swap_source[0]
+                and not self.bag_mode[0]
+                and (self.level_path_on[0] or self.follow_path_on[0] or self.autoswap_on[0])):
+            _nodes  = new_state.get("nodes", [])
+            new_acc = frozenset(n["index"] for n in _nodes if n["accessible"])
+            if new_acc and new_acc != self._follow_last_accessible:
+                self._follow_last_accessible = new_acc
+                completed_idxs = [i for i, n in enumerate(_nodes) if n.get("state") == "completed"]
+                last_done = max(completed_idxs) if completed_idxs else 0
+                path = _compute_best_level_path(_nodes, last_done,
+                    _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0]))
+                _acc_list = [n["index"] for n in _nodes if n["accessible"]]
+                for node_idx in path:
+                    if node_idx >= len(_nodes): continue
+                    if node_idx in new_acc:
+                        _target_node_idx = node_idx
+                        break
+
+                # Set cursor to path node before rendering
+                if _target_node_idx is not None and self.level_path_on[0]:
+                    pos = _acc_list.index(_target_node_idx)
+                    self.selected = pos
+                    self.map_carousel_idx = pos
+
         self._rebuild()
 
+        # Autoswap + Follow Path (after render, FIFO queue ensures swap-before-click)
+        if _target_node_idx is not None:
+            if self.autoswap_on[0]:
+                node = _nodes[_target_node_idx]
+                if node.get("type") in ("trainer", "boss"):
+                    self._queue_autoswap(new_state.get("team", []), node.get("poke_type", ""))
+            if self.follow_path_on[0] and _nodes[_target_node_idx].get("type") != "boss":
+                self._execute_item(_acc_list.index(_target_node_idx))
+
     def _handle_screen_change_ui(self, prev: ScreenType, new: ScreenType) -> None:
+        if new in (ScreenType.BADGE_OBTAINED, ScreenType.STARTER_SELECT):
+            self.follow_path_on[0]        = False
+            self._follow_last_accessible  = frozenset()
         page = self.page
         if new == ScreenType.STARTER_SELECT:
             idx = self.selected_starter
@@ -3088,10 +3229,11 @@ class PokelikeApp(App):
             pass
 
         is_map         = self.game_screen == ScreenType.MAP
-        is_catch       = self.game_screen == ScreenType.CATCH_POKEMON
+        _utils_open    = self.utils_mode[0] and self.game_screen in self._UTILS_SCREENS
+        is_catch       = self.game_screen == ScreenType.CATCH_POKEMON  and not _utils_open
         is_battle      = self.game_screen == ScreenType.BATTLE
-        is_item_select = self.game_screen == ScreenType.ITEM_SELECT
-        is_team_full   = self.game_screen == ScreenType.TEAM_FULL
+        is_item_select = self.game_screen == ScreenType.ITEM_SELECT    and not _utils_open
+        is_team_full   = self.game_screen == ScreenType.TEAM_FULL      and not _utils_open
         is_main_menu   = self.game_screen == ScreenType.MAIN_MENU
         is_custom      = is_map or is_catch or is_battle or is_item_select or is_team_full or is_main_menu
         try:
@@ -3155,10 +3297,12 @@ class PokelikeApp(App):
             completed_idxs = [i for i, n in enumerate(nodes_all) if n.get("state") == "completed"]
             last_completed = max(completed_idxs) if completed_idxs else 0
             if self.level_path_on[0]:
-                lp_key = (last_completed, tuple(n.get("type", "") for n in nodes_all))
+                lp_key = (last_completed, tuple(n.get("type", "") for n in nodes_all),
+                          self.prioritize_catch_on[0], self.prioritize_heal_on[0])
                 if lp_key != self._last_level_path_key:
                     self._last_level_path_key = lp_key
-                    self.best_level_path[0] = _compute_best_level_path(nodes_all, last_completed)
+                    self.best_level_path[0] = _compute_best_level_path(nodes_all, last_completed,
+                        _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0]))
             elif not self.level_path_on[0]:
                 self._last_level_path_key = None
                 self.best_level_path[0] = []
@@ -3382,6 +3526,12 @@ class PokelikeApp(App):
                 except Exception:
                     pass
 
+    # Screens that expose the Utils sub-menu (non-MAP)
+    _UTILS_SCREENS = frozenset({
+        ScreenType.CATCH_POKEMON, ScreenType.ITEM_SELECT, ScreenType.ITEM_EQUIP,
+        ScreenType.TRADE_OFFER, ScreenType.TEAM_FULL,
+    })
+
     def _build_current_items(self) -> list[MenuItem]:
         def noop_refresh():
             return ""
@@ -3390,15 +3540,58 @@ class PokelikeApp(App):
             return build_map_items(
                 self.state, self.page, noop_refresh,
                 self.selected_starter, self.swap_source, self.bag_mode,
-                self.utils_mode, self.level_path_on,
+                self.utils_mode, self.level_path_on, self.follow_path_on,
+                self.prioritize_catch_on, self.prioritize_heal_on, self.autoswap_on,
             )
+
         self.swap_source[0] = None
         self.bag_mode[0]    = False
-        self.utils_mode[0]  = False
+
+        # Utils sub-menu — available on all _UTILS_SCREENS
+        if self.utils_mode[0] and self.game_screen in self._UTILS_SCREENS:
+            def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
+            def _toggle_lp():
+                self.level_path_on[0] = not self.level_path_on[0]
+                return "Level Path toggled"
+            def _toggle_fp():
+                self.follow_path_on[0] = not self.follow_path_on[0]
+                return "FOLLOW_PATH_TOGGLED"
+            def _toggle_as():
+                self.autoswap_on[0] = not self.autoswap_on[0]
+                return "Level Path toggled"
+            def _toggle_pc():
+                self.prioritize_catch_on[0] = not self.prioritize_catch_on[0]
+                return "Level Path toggled"
+            def _toggle_ph():
+                self.prioritize_heal_on[0] = not self.prioritize_heal_on[0]
+                return "Level Path toggled"
+            def _cancel_utils():
+                self.utils_mode[0] = False
+                return "UTILS_CANCELLED"
+            return [
+                MenuItem(_lbl("Level Path",        self.level_path_on[0]),       "U", _toggle_lp),
+                MenuItem(_lbl("Follow Path",        self.follow_path_on[0]),      "F", _toggle_fp),
+                MenuItem(_lbl("Autoswap",           self.autoswap_on[0]),         "A", _toggle_as),
+                MenuItem(_lbl("Prio. First Catch",  self.prioritize_catch_on[0]), "C", _toggle_pc),
+                MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),  "H", _toggle_ph),
+                MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
+                MenuItem("Cancel", "X", _cancel_utils),
+                MenuItem("Quit",   "Q", lambda: "QUIT"),
+            ]
+
+        self.utils_mode[0] = False
         builder = MENU_BUILDERS.get(self.game_screen)
-        if builder:
-            return builder(self.state, self.page, noop_refresh, self.selected_starter)
-        return _fallback_items(noop_refresh, self.page)
+        items   = builder(self.state, self.page, noop_refresh, self.selected_starter) if builder \
+                  else _fallback_items(noop_refresh, self.page)
+
+        # Append Utils entry to supported screens (before the last Quit item)
+        if self.game_screen in self._UTILS_SCREENS:
+            def _enter_utils():
+                self.utils_mode[0] = True
+                return ""
+            items.insert(len(items) - 1, MenuItem("Utils", "U", _enter_utils))
+
+        return items
 
     # ------------------------------------------------------------------
     # Input
@@ -3411,6 +3604,12 @@ class PokelikeApp(App):
         key   = event.key
         items = self._items
         if not items:
+            return
+        if key == "f":
+            self.follow_path_on[0] = not self.follow_path_on[0]
+            self._follow_last_accessible = frozenset()
+            self._force_parse = True
+            self._rebuild()
             return
         if self.game_screen == ScreenType.MAIN_MENU and key in ("up", "down", "left", "right"):
             self._main_menu_nav(key)
@@ -3463,6 +3662,8 @@ class PokelikeApp(App):
                     self.swap_source[0] = None
                     self.bag_mode[0]    = False
                     self.utils_mode[0]  = False
+                    self._follow_last_accessible = frozenset()
+                    self._force_parse   = True
                     self._rebuild()
         elif key == "q":
             self.exit()
@@ -3616,6 +3817,26 @@ class PokelikeApp(App):
         self.selected = max(0, min(self.selected, len(items) - 1))
         self._rebuild()
 
+    def _queue_autoswap(self, team: list, poke_type: str) -> None:
+        desired = _compute_autoswap_order(team, poke_type)
+        if desired == list(range(len(team))):
+            return
+        current = list(range(len(team)))
+        pg = self.page
+        for i in range(len(current)):
+            if current[i] == desired[i]:
+                continue
+            j = current.index(desired[i])
+            src, dst = i, j
+            def do_autoswap(s=src, d=dst):
+                pg.locator(".map-panel-left .team-slot").nth(s).drag_to(
+                    pg.locator(".map-panel-left .team-slot").nth(d)
+                )
+                pg.mouse.move(0, 0)
+                return f"Autoswap: {s} ↔ {d}"
+            self._task_queue.put((do_autoswap, [None], threading.Event()))
+            current[i], current[j] = current[j], current[i]
+
     def _team_full_nav(self, direction: str) -> None:
         items   = self._items
         n_team  = len(self.state.get("team", []))   # 6
@@ -3665,6 +3886,14 @@ class PokelikeApp(App):
         elif result == "SHOW_JSON":
             state_json = json.dumps(self.state, indent=2)
             self.call_from_thread(self.push_screen, JsonScreen(state_json))
+        elif result == "FOLLOW_PATH_TOGGLED":
+            self._follow_last_accessible = frozenset()
+            self._force_parse = True
+            self.call_from_thread(self._rebuild)
+        elif result == "UTILS_CANCELLED":
+            self._follow_last_accessible = frozenset()
+            self._force_parse = True
+            self.call_from_thread(self._rebuild)
         elif result == "SHOW_LEVEL_PATH_DEBUG":
             nodes = self.state.get("nodes", [])
             path  = self.best_level_path[0]
@@ -3688,6 +3917,10 @@ class PokelikeApp(App):
             # Force a fresh parse on the next browser loop cycle so state-changing
             # actions (swap, equip, etc.) are reflected even if the DOM hash matches.
             self._force_parse = True
+            # If utils/follow-path mode was just exited, reset follow tracker so
+            # the next map state triggers the auto-execute immediately.
+            if not self.utils_mode[0]:
+                self._follow_last_accessible = frozenset()
             self.call_from_thread(self._rebuild)
 
 
