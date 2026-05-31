@@ -409,12 +409,13 @@ def build_main_menu_items(
         num = ROMAN.get(g, g)
         items.append(MenuItem(f"Gen {g}", num, click_gen(g), enabled=(g != selected_gen)))
 
-    # Right column: starters (action sets selected_starter via special return value)
+    # Right column: starters — use digit shortcuts (7/8/9) to avoid clashing with mode keys
+    _starter_shortcuts = ["7", "8", "9"]
     for i, (letter, _color) in enumerate(starters):
         def set_starter(idx=i):
             return f"SET_STARTER:{idx}"
-        items.append(MenuItem(f"Starter {letter}", letter.lower(), set_starter,
-                              enabled=(i != selected_starter)))
+        items.append(MenuItem(f"Starter {letter}", _starter_shortcuts[i] if i < len(_starter_shortcuts) else "?",
+                              set_starter, enabled=(i != selected_starter)))
 
     def reload_page():
         page.reload()
@@ -1397,8 +1398,8 @@ class GameModeCard(Widget):
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="gmc-row"):
-            yield Label(f"[{self._item.shortcut}]", classes="gmc-key")
-            yield Label(self._item.label,            classes="gmc-name")
+            yield Label(Text(f"[{self._item.shortcut}]"), classes="gmc-key")
+            yield Label(self._item.label,               classes="gmc-name")
         yield Label(_MODE_DESC.get(self._item.label, ""), classes="gmc-desc")
 
     def set_selected(self, value: bool) -> None:
@@ -1411,15 +1412,13 @@ class RightColCard(Widget):
     DEFAULT_CSS = """
     RightColCard {
         width: 1fr;
-        height: 1fr;
+        height: 3;
         border: round #2a2a4a;
         background: #0d0d1e;
         padding: 0 2;
         layout: horizontal;
         align: left middle;
-        margin-bottom: 1;
     }
-    RightColCard:last-of-type { margin-bottom: 0; }
     RightColCard.focused { border: round #f5c518; background: #16140a; }
     RightColCard.active  { border: round #00d7d7; background: #001825; }
     .rcc-key   { width: 4; color: #f5c518; text-style: bold; content-align: center middle; }
@@ -1427,16 +1426,18 @@ class RightColCard(Widget):
     """
 
     def __init__(self, shortcut: str, label: str, label_markup: str = "",
-                 is_focused: bool = False, is_active: bool = False) -> None:
+                 is_focused: bool = False, is_active: bool = False,
+                 display_key: str = "") -> None:
         super().__init__()
-        self._shortcut    = shortcut
-        self._label       = label
+        self._shortcut     = shortcut
+        self._label        = label
         self._label_markup = label_markup
+        self._display_key  = display_key or shortcut
         if is_focused: self.add_class("focused")
         if is_active:  self.add_class("active")
 
     def compose(self) -> ComposeResult:
-        yield Label(f"[{self._shortcut}]", classes="rcc-key")
+        yield Label(Text(f"[{self._display_key}]"), classes="rcc-key")
         markup = self._label_markup or self._label
         yield Label(Text.from_markup(markup), classes="rcc-label")
 
@@ -1481,6 +1482,14 @@ class MainMenuPanel(Widget):
         border-title-style: bold;
     }
     #mm-right-items { height: 1fr; layout: vertical; }
+    .mm-section-hdr {
+        height: 1;
+        color: #555577;
+        text-style: bold;
+        padding: 0 1;
+        margin-top: 1;
+    }
+    #mm-gen-hdr { margin-top: 0; }
     #mm-strip {
         height: 5;
         layout: horizontal;
@@ -1507,6 +1516,7 @@ class MainMenuPanel(Widget):
         gens       = state.get("available_gens", [])
         n_gens     = len(gens)
         n_starters = len(starters)
+        n_right    = n_gens + n_starters
         active_gen = state.get("selected_gen")
 
         # ── Mode cards (left) ─────────────────────────────────────────
@@ -1531,22 +1541,18 @@ class MainMenuPanel(Widget):
             f"[dim]logged in as[/]\n[bold #00e676]{user}[/]"
         ))
 
-        # ── Right column: gens then starters (vertical) ───────────────
-        right_col  = self.query_one("#mm-right-items")
-        n_right    = n_gens + n_starters
-        right_items = items[n_modes: n_modes + n_right]
+        def gen_markup(g: str) -> str:
+            return f"[bold #00d7d7]GEN {g}[/]" if g == active_gen else f"[#e8e8ff]GEN {g}[/]"
+
+        def starter_markup(letter: str, color: str, is_sel: bool) -> str:
+            return f"[bold {color}]★  {letter}[/]" if is_sel else f"[#666688]{letter}[/]"
+
+        # ── Right column: section headers + gen cards + starter cards ─
+        right_col   = self.query_one("#mm-right-items")
         existing_rc = list(right_col.query(RightColCard))
 
-        def gen_markup(g: str) -> str:
-            label = f"GEN {g}"
-            return f"[bold #00d7d7]{label}[/]" if g == active_gen else f"[#e8e8ff]{label}[/]"
-
-        def starter_markup(letter: str, color: str, is_active: bool) -> str:
-            if is_active:
-                return f"[bold {color}]★  {letter}[/]"
-            return f"[#666688]{letter}[/]"
-
         if len(existing_rc) == n_right:
+            # In-place update — no remount
             for i, card in enumerate(existing_rc):
                 is_focused = (n_modes + i) == selected
                 card.set_focused(is_focused)
@@ -1562,24 +1568,34 @@ class MainMenuPanel(Widget):
                     card.update_label(starter_markup(letter, color, is_sel))
         else:
             right_col.query(RightColCard).remove()
-            cards: list = []
-            for i in range(n_gens):
-                g         = gens[i]
+            right_col.query(Label).remove()
+            widgets: list = [
+                Label("GENERATION", id="mm-gen-hdr", classes="mm-section-hdr"),
+            ]
+            for i, g in enumerate(gens):
                 is_focused = (n_modes + i) == selected
-                cards.append(RightColCard(
+                widgets.append(RightColCard(
                     ROMAN.get(g, g), f"Gen {g}", gen_markup(g),
-                    is_focused=is_focused, is_active=(g == active_gen and not is_focused),
+                    is_focused=is_focused,
+                    is_active=(g == active_gen and not is_focused),
+                    display_key=ROMAN.get(g, g),
                 ))
+            widgets.append(Label("STARTER", id="mm-str-hdr", classes="mm-section-hdr"))
+            _str_display   = ["7", "8", "9"]
+            _str_shortcuts = ["7", "8", "9"]
             for si, (letter, color) in enumerate(starters):
-                i         = n_gens + si
+                i          = n_gens + si
                 is_focused = (n_modes + i) == selected
-                is_sel    = si == selected_starter
-                cards.append(RightColCard(
-                    letter.lower(), f"Starter {letter}",
+                is_sel     = si == selected_starter
+                widgets.append(RightColCard(
+                    _str_shortcuts[si] if si < len(_str_shortcuts) else "?",
+                    f"Starter {letter}",
                     starter_markup(letter, color, is_sel),
-                    is_focused=is_focused, is_active=(is_sel and not is_focused),
+                    is_focused=is_focused,
+                    is_active=(is_sel and not is_focused),
+                    display_key=_str_display[si] if si < len(_str_display) else "?",
                 ))
-            right_col.mount(*cards)
+            right_col.mount(*widgets)
 
         # ── Strip ─────────────────────────────────────────────────────
         strip_offset = n_modes + n_right
