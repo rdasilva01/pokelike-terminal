@@ -1043,9 +1043,11 @@ def _dom_hash(page, screen: ScreenType) -> str:
             const sl = q('.team-slot-name')?.innerText || ''
             const bt = q('.battle-header')?.innerText || ''
             const nd = document.querySelectorAll('.screen.active svg g').length
-            const it = document.querySelectorAll('.item-card').length
+            const it = document.querySelectorAll('.screen.active .item-card').length
             const pc = document.querySelectorAll('.screen.active .poke-choice-wrap').length
-            return `${hp}|${sl}|${bt}|${nd}|${it}|${pc}`
+            const bh = Array.from(document.querySelectorAll('.battle-pokemon .hp-text')).map(e => e.innerText).join('|')
+            const ba = Array.from(document.querySelectorAll('.battle-pokemon')).map(e => e.className).join('|')
+            return `${hp}|${sl}|${bt}|${nd}|${it}|${pc}|${bh}|${ba}`
         }""")
     except Exception:
         return ""
