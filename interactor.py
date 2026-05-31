@@ -474,7 +474,8 @@ NODE_TYPE_LABEL = {
 
 
 def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: int,
-                    swap_source=None, bag_mode=None) -> list[MenuItem]:
+                    swap_source=None, bag_mode=None,
+                    utils_mode=None, level_path_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -487,8 +488,24 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
 
     def _cancel_all(msg):
         if swap_source is not None: swap_source[0] = None
-        if bag_mode   is not None: bag_mode[0]   = False
+        if bag_mode    is not None: bag_mode[0]    = False
+        if utils_mode  is not None: utils_mode[0]  = False
         return msg
+
+    # ── utils sub-menu ────────────────────────────────────────────────
+    if utils_mode is not None and utils_mode[0]:
+        lp_on    = level_path_on is not None and level_path_on[0]
+        lp_label = "Level Path  [bold #00e676]ON[/]" if lp_on else "Level Path  [dim]OFF[/]"
+        def toggle_lp():
+            if level_path_on is not None:
+                level_path_on[0] = not level_path_on[0]
+            return "Level Path toggled"
+        return [
+            MenuItem(lp_label, "U", toggle_lp),
+            MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
+            MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
+            MenuItem("Quit",   "Q", lambda: "QUIT"),
+        ]
 
     if bag_mode is not None and bag_mode[0]:
         items = []
@@ -607,7 +624,13 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
     def open_dex():
         return "SHOW_POKEDEX"
 
+    def enter_utils():
+        if utils_mode is not None:
+            utils_mode[0] = True
+        return "Utils menu"
+
     items += [
+        MenuItem("Utils",       "U", enter_utils),
         MenuItem("Pokédex",     "D", open_dex),
         MenuItem("Reload Page", "P", reload_page),
         MenuItem("Quit",        "Q", lambda: "QUIT"),
@@ -1932,6 +1955,35 @@ def _lattice_connectors() -> list[tuple[int, int, str, int, int]]:
 
 _CONNECTORS = _lattice_connectors()
 
+_NODE_SCORE: dict[str, float] = {
+    "trainer": 2.0, "wild_encounter": 1.0, "mystery": 0.5,
+}
+
+def _node_score(node_type: str) -> float:
+    return _NODE_SCORE.get(node_type, 0.0)
+
+def _compute_best_level_path(nodes: list, start_idx: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for _, _, _, top, bot in _CONNECTORS:
+        children.setdefault(top, []).append(bot)
+    boss_idx = next((i for i, n in enumerate(nodes) if n.get("type") == "boss"), len(nodes) - 1)
+    best: list[int] = [start_idx]
+    best_score: list[float] = [_node_score(nodes[start_idx].get("type","")) if start_idx < len(nodes) else 0.0]
+
+    def dfs(path: list[int], score: float) -> None:
+        cur = path[-1]
+        if cur == boss_idx:
+            if score > best_score[0]:
+                best_score[0] = score
+                best[:] = path
+            return
+        for child in children.get(cur, []):
+            ns = _node_score(nodes[child].get("type","")) if child < len(nodes) else 0.0
+            dfs(path + [child], score + ns)
+
+    dfs([start_idx], best_score[0])
+    return best
+
 
 # ---------------------------------------------------------------------------
 # MAP screen widgets
@@ -2086,7 +2138,8 @@ class MapGraphWidget(Static):
     }
     """
 
-    def rebuild(self, nodes: list[dict], current_node_idx: int | None = None) -> None:
+    def rebuild(self, nodes: list[dict], current_node_idx: int | None = None,
+                highlight_path: list[int] | None = None) -> None:
         completed_idxs = [i for i, n in enumerate(nodes) if n.get("state") == "completed"]
         last_completed = max(completed_idxs) if completed_idxs else None
 
@@ -2106,11 +2159,17 @@ class MapGraphWidget(Static):
             [(" ", "")] * _GRID_W for _ in range(_GRID_H)
         ]
 
-        # Connectors — white if both endpoints are completed, dim otherwise
+        # Connectors
         completed_set = {i for i, n in enumerate(nodes) if n.get("state") == "completed"}
+        path_set      = set(highlight_path) if highlight_path else set()
         for gy, gx, ch, top_idx, bot_idx in _CONNECTORS:
-            diag  = "╱" if ch == "/" else "╲"
-            style = "#e8e8ff" if (top_idx in completed_set and bot_idx in completed_set) else "#2e2e50"
+            diag = "╱" if ch == "/" else "╲"
+            if path_set and top_idx in path_set and bot_idx in path_set:
+                style = "#00aaff"   # blue — best level path
+            elif top_idx in completed_set and bot_idx in completed_set:
+                style = "#e8e8ff"   # white — completed
+            else:
+                style = "#2e2e50"   # dim
             grid[gy][gx] = (diag, style)
 
         # "v" marker one row above the selected node
@@ -2834,6 +2893,10 @@ class PokelikeApp(App):
         self.selected_starter = 0
         self.swap_source     = [None]
         self.bag_mode        = [False]
+        self.utils_mode      = [False]
+        self.level_path_on   = [True]
+        self.best_level_path = [[]]
+        self._last_level_path_key = None
         self.flash_until     = 0.0
         self._items: list[MenuItem] = []
         self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -3050,7 +3113,8 @@ class PokelikeApp(App):
             n_nodes       = len(accessible)
             is_swap_pick  = swap_val in ("swap", "item_pick") or isinstance(swap_val, int)
             is_bag_active = self.bag_mode[0]
-            is_special    = is_swap_pick or is_bag_active
+            is_utils      = self.utils_mode[0]
+            is_special    = is_swap_pick or is_bag_active or is_utils
 
             # Team grid
             team_key = tuple(
@@ -3087,11 +3151,24 @@ class PokelikeApp(App):
             acc_indices = [i for i, n in enumerate(nodes_all) if n["accessible"]]
             carousel_sel = self.map_carousel_idx % max(1, len(acc_indices))
             current_node_idx = acc_indices[carousel_sel] if acc_indices else None
-            graph_key = (tuple(n.get("state", "") for n in nodes_all), current_node_idx)
+            # Best level path — compute/cache when active, starting from the X (last completed) node
+            completed_idxs = [i for i, n in enumerate(nodes_all) if n.get("state") == "completed"]
+            last_completed = max(completed_idxs) if completed_idxs else 0
+            if self.level_path_on[0]:
+                lp_key = (last_completed, tuple(n.get("type", "") for n in nodes_all))
+                if lp_key != self._last_level_path_key:
+                    self._last_level_path_key = lp_key
+                    self.best_level_path[0] = _compute_best_level_path(nodes_all, last_completed)
+            elif not self.level_path_on[0]:
+                self._last_level_path_key = None
+                self.best_level_path[0] = []
+
+            highlight = self.best_level_path[0] if self.level_path_on[0] else None
+            graph_key = (tuple(n.get("state", "") for n in nodes_all), current_node_idx, tuple(highlight) if highlight else ())
             if graph_key != self._last_graph_key:
                 self._last_graph_key = graph_key
                 try:
-                    self.query_one(MapGraphWidget).rebuild(nodes_all, current_node_idx)
+                    self.query_one(MapGraphWidget).rebuild(nodes_all, current_node_idx, highlight_path=highlight)
                 except Exception:
                     pass
 
@@ -3275,8 +3352,8 @@ class PokelikeApp(App):
                 if is_swap_pick:
                     util_items   = self._items[len(team):]  # only Cancel/Quit
                     strip_offset = len(team)
-                elif is_bag_active:
-                    util_items   = self._items              # all bag items in strip
+                elif is_bag_active or is_utils:
+                    util_items   = self._items              # all items in strip
                     strip_offset = 0
                 else:
                     util_items   = self._items[n_nodes:]
@@ -3313,9 +3390,11 @@ class PokelikeApp(App):
             return build_map_items(
                 self.state, self.page, noop_refresh,
                 self.selected_starter, self.swap_source, self.bag_mode,
+                self.utils_mode, self.level_path_on,
             )
         self.swap_source[0] = None
         self.bag_mode[0]    = False
+        self.utils_mode[0]  = False
         builder = MENU_BUILDERS.get(self.game_screen)
         if builder:
             return builder(self.state, self.page, noop_refresh, self.selected_starter)
@@ -3380,9 +3459,10 @@ class PokelikeApp(App):
         elif key == "escape":
             if self.game_screen == ScreenType.MAP:
                 sv = self.swap_source[0]
-                if sv is not None or self.bag_mode[0]:
+                if sv is not None or self.bag_mode[0] or self.utils_mode[0]:
                     self.swap_source[0] = None
                     self.bag_mode[0]    = False
+                    self.utils_mode[0]  = False
                     self._rebuild()
         elif key == "q":
             self.exit()
@@ -3432,7 +3512,7 @@ class PokelikeApp(App):
             self._rebuild()
             return
 
-        if is_bag_active or n_nodes == 0:
+        if is_bag_active or self.utils_mode[0] or n_nodes == 0:
             delta = -1 if direction in ("up", "left") else 1
             self.selected = (self.selected + delta) % len(items)
             self._rebuild()
@@ -3585,6 +3665,19 @@ class PokelikeApp(App):
         elif result == "SHOW_JSON":
             state_json = json.dumps(self.state, indent=2)
             self.call_from_thread(self.push_screen, JsonScreen(state_json))
+        elif result == "SHOW_LEVEL_PATH_DEBUG":
+            nodes = self.state.get("nodes", [])
+            path  = self.best_level_path[0]
+            if not path:
+                debug = "No path computed.\nEnable Level Path first (U → U)."
+            else:
+                total = sum(_node_score(nodes[i].get("type", "")) for i in path if i < len(nodes))
+                lines = [f"Best Level Path  (total score: {total:.1f})\n"]
+                for i in path:
+                    ntype = nodes[i].get("type", "?") if i < len(nodes) else "?"
+                    lines.append(f"  Node {i:2d}  {ntype:<20}  +{_node_score(ntype):.1f}")
+                debug = "\n".join(lines)
+            self.call_from_thread(self.push_screen, JsonScreen(debug))
         elif isinstance(result, str) and result.startswith("SET_STARTER:"):
             idx = int(result.split(":")[1])
             def _apply(i=idx):
