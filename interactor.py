@@ -292,16 +292,29 @@ class BagPanel(Static):
     }
     """
 
-    def update_bag(self, bag: list) -> None:
+    def update_bag(self, bag: list, follow_on: bool = False,
+                   heal_on: bool = False, catch_on: bool = False,
+                   autoswap_on: bool = False) -> None:
         t = Text()
         if bag:
             for item in bag:
                 t.append(f"{item['name'][:17]}\n", style="#e8e8ff")
         else:
             t.append("—\n", style="#555577")
-        t.append("\n", style="")
+        t.append("\n")
+
+        def _row(key: str, label: str, active: bool) -> None:
+            style = "#00e676" if active else "#555577"
+            state = "ON " if active else "OFF"
+            t.append(f"{key}  {label} {state}\n", style=style)
+
+        _row("F", "Follow Path ", follow_on)
+        _row("A", "Autoswap    ", autoswap_on)
+        _row("H", "Prio. Heal  ", heal_on)
+        _row("C", "Prio. Catch ", catch_on)
+        t.append("\n")
         t.append("R  refresh\n", style="dim #555577")
-        t.append("J  raw json", style="dim #555577")
+        t.append("J  raw json",  style="dim #555577")
         self.update(t)
 
 
@@ -1043,9 +1056,11 @@ def _dom_hash(page, screen: ScreenType) -> str:
             const sl = q('.team-slot-name')?.innerText || ''
             const bt = q('.battle-header')?.innerText || ''
             const nd = document.querySelectorAll('.screen.active svg g').length
-            const it = document.querySelectorAll('.item-card').length
+            const it = document.querySelectorAll('.screen.active .item-card').length
             const pc = document.querySelectorAll('.screen.active .poke-choice-wrap').length
-            return `${hp}|${sl}|${bt}|${nd}|${it}|${pc}`
+            const bh = Array.from(document.querySelectorAll('.battle-pokemon .hp-text')).map(e => e.innerText).join('|')
+            const ba = Array.from(document.querySelectorAll('.battle-pokemon')).map(e => e.className).join('|')
+            return `${hp}|${sl}|${bt}|${nd}|${it}|${pc}|${bh}|${ba}`
         }""")
     except Exception:
         return ""
@@ -3376,7 +3391,13 @@ class PokelikeApp(App):
 
             # Bag
             try:
-                self.query_one(BagPanel).update_bag(self.state.get("bag", []))
+                self.query_one(BagPanel).update_bag(
+                    self.state.get("bag", []),
+                    follow_on=self.follow_path_on[0],
+                    heal_on=self.prioritize_heal_on[0],
+                    catch_on=self.prioritize_catch_on[0],
+                    autoswap_on=self.autoswap_on[0],
+                )
             except Exception:
                 pass
 
@@ -3719,6 +3740,19 @@ class PokelikeApp(App):
         if key == "f":
             self.follow_path_on[0] = not self.follow_path_on[0]
             self._follow_last_accessible = frozenset()
+        if key == "a" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
+            self.autoswap_on[0] = not self.autoswap_on[0]
+            self._rebuild()
+            return
+        if key == "h" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
+            self.prioritize_heal_on[0] = not self.prioritize_heal_on[0]
+            self._last_level_path_key = None
+            self._force_parse = True
+            self._rebuild()
+            return
+        if key == "c" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
+            self.prioritize_catch_on[0] = not self.prioritize_catch_on[0]
+            self._last_level_path_key = None
             self._force_parse = True
             self._rebuild()
             return
