@@ -2015,6 +2015,7 @@ def _node_score(node_type: str) -> float:
     return _NODE_SCORE.get(node_type, 0.0)
 
 def _autoswap_score(pokemon_types: list, poke_type: str) -> float:
+    """Our attack effectiveness vs opponent (higher = better)."""
     if not poke_type or "/" in poke_type:
         return 1.0
     attack = (pokemon_types[0] if pokemon_types else "").capitalize()
@@ -2022,13 +2023,27 @@ def _autoswap_score(pokemon_types: list, poke_type: str) -> float:
     return _TYPE_CHART.get(attack, {}).get(defend, 1.0)
 
 
+def _defense_score(pokemon_types: list, poke_type: str) -> float:
+    """Damage multiplier opponent deals to our pokemon (lower = better, 0.5 > 1.0 > 2.0)."""
+    if not poke_type or "/" in poke_type:
+        return 1.0
+    attack = poke_type.strip().capitalize()
+    mult = 1.0
+    for t in pokemon_types:
+        mult *= _TYPE_CHART.get(attack, {}).get(t.capitalize(), 1.0)
+    return mult
+
+
 def _compute_autoswap_order(team: list, poke_type: str) -> list[int]:
     scored = [
-        (i, _autoswap_score(p.get("types", []), poke_type), p.get("level") or 0)
+        (i,
+         _autoswap_score(p.get("types", []), poke_type),   # our attack  — higher better
+         _defense_score(p.get("types", []), poke_type),    # dmg received — lower better
+         p.get("level") or 0)                               # level        — higher better
         for i, p in enumerate(team)
     ]
-    scored.sort(key=lambda x: (-x[1], -x[2]))
-    return [i for i, _, _ in scored]
+    scored.sort(key=lambda x: (-x[1], x[2], -x[3]))
+    return [i for i, _, _, _ in scored]
 
 
 def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool):
@@ -3896,17 +3911,47 @@ class PokelikeApp(App):
             self.call_from_thread(self._rebuild)
         elif result == "SHOW_LEVEL_PATH_DEBUG":
             nodes = self.state.get("nodes", [])
+            team  = self.state.get("team", [])
             path  = self.best_level_path[0]
+            lines: list[str] = []
+
+            # ── Level path ───────────────────────────────────────────
             if not path:
-                debug = "No path computed.\nEnable Level Path first (U → U)."
+                lines.append("No path computed. Enable Level Path first (U → U).")
             else:
                 total = sum(_node_score(nodes[i].get("type", "")) for i in path if i < len(nodes))
-                lines = [f"Best Level Path  (total score: {total:.1f})\n"]
+                lines.append(f"Best Level Path  (total score: {total:.1f})\n")
                 for i in path:
                     ntype = nodes[i].get("type", "?") if i < len(nodes) else "?"
                     lines.append(f"  Node {i:2d}  {ntype:<20}  +{_node_score(ntype):.1f}")
-                debug = "\n".join(lines)
-            self.call_from_thread(self.push_screen, JsonScreen(debug))
+
+            # ── Autoswap order ───────────────────────────────────────
+            if team:
+                # Find target node poke_type from path
+                poke_type = ""
+                new_acc   = frozenset(n["index"] for n in nodes if n["accessible"])
+                for ni in path:
+                    if ni < len(nodes) and ni in new_acc:
+                        poke_type = nodes[ni].get("poke_type", "")
+                        break
+
+                lines.append(f"\nAutoswap order  (vs {poke_type or '?'})\n")
+                order = _compute_autoswap_order(team, poke_type)
+                for rank, slot in enumerate(order):
+                    if slot >= len(team):
+                        continue
+                    p      = team[slot]
+                    name   = p.get("name", "?")
+                    types  = "/".join(p.get("types", []))
+                    lv     = p.get("level") or "?"
+                    atk    = _autoswap_score(p.get("types", []), poke_type)
+                    dfn    = _defense_score(p.get("types", []), poke_type)
+                    lines.append(
+                        f"  {rank+1}. {name:<12} Lv{lv:<3}  [{types}]"
+                        f"  atk×{atk:.1f}  def×{dfn:.1f}"
+                    )
+
+            self.call_from_thread(self.push_screen, JsonScreen("\n".join(lines)))
         elif isinstance(result, str) and result.startswith("SET_STARTER:"):
             idx = int(result.split(":")[1])
             def _apply(i=idx):

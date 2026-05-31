@@ -61,7 +61,7 @@ class MapParser(AbstractParser):
             "team":   team,
             "bag":    static["bag"],
             "badges": static["badges"],
-            "nodes":  self._process_nodes(static["nodes"]),
+            "nodes":  self._process_nodes(static["nodes"], static.get("bossType", "")),
         }
 
     # ------------------------------------------------------------------ team (1 round-trip)
@@ -199,7 +199,16 @@ class MapParser(AbstractParser):
                         })
                 }
 
-                return { stage, boss_team, bag, badges, nodes }
+                // --- boss type (direct from leader data) ---
+                let bossType = ''
+                try {
+                    const mapIdx  = run.currentMap ?? null
+                    const gen2    = run.gen2Mode || false
+                    const leaders = gen2 ? JOHTO_GYM_LEADERS : GYM_LEADERS
+                    bossType = leaders?.[mapIdx]?.type || ''
+                } catch(e) {}
+
+                return { stage, boss_team, bag, badges, nodes, bossType }
             }""")
         except Exception:
             return {"stage": {"number": None, "boss": None, "boss_type": None},
@@ -207,7 +216,7 @@ class MapParser(AbstractParser):
 
     # ------------------------------------------------------------------ nodes post-processing (CPU only)
 
-    def _process_nodes(self, nodes: list) -> list:
+    def _process_nodes(self, nodes: list, boss_type: str = "") -> list:
 
         result = []
         for n in nodes:
@@ -238,14 +247,16 @@ class MapParser(AbstractParser):
                         if part.strip().lower() in KNOWN_TYPES:
                             poke_type = part.strip().title()
                             break
-            # For boss nodes whose label has no type info, fall back to the
-            # known-boss sprite→type table (covers all gen 1/2 gym leaders + E4).
+            # For boss nodes whose label has no type info, try sprite table then
+            # the direct leader type from GYM_LEADERS (most reliable).
             if not poke_type and node_type == "boss":
                 for s in (unquote(n.get("ls_sprite", "")), unquote(n.get("sprite", ""))):
                     t = BOSS_SPRITE_TYPE.get(s.lower())
                     if t:
                         poke_type = t
                         break
+                if not poke_type and boss_type:
+                    poke_type = boss_type
             result.append({
                 "index":      n["index"],
                 "type":       node_type,
