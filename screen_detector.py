@@ -39,7 +39,7 @@ def detect(page: Page) -> ScreenType:
             if (vis('.screen.active .poke-choice-wrap'))   return 'CATCH_POKEMON'
             if (vis('.item-equip-overlay')) return 'ITEM_EQUIP'
             if (vis('.trade-member-row'))   return 'TRADE_OFFER'
-            if (vis('.item-card'))          return 'ITEM_SELECT'
+            if (vis('.screen.active .item-card'))          return 'ITEM_SELECT'
             const btnsAll = Array.from(document.querySelectorAll('.btn-primary'))
             if (btnsAll.some(b => b.textContent.includes('Next Map') && b.getBoundingClientRect().width > 0)) return 'BADGE_OBTAINED'
             if (btnsAll.some(b => b.textContent.trim() === 'Normal Mode' && b.getBoundingClientRect().width > 0)) return 'MAIN_MENU'

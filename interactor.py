@@ -1767,7 +1767,11 @@ class ItemSelectPanel(Widget):
         cards_row = self.query_one("#item-cards")
         existing  = list(cards_row.query(ItemSelectCard))
 
-        if len(existing) == len(choices):
+        same_data = (
+            len(existing) == len(choices)
+            and all(e._choice.get("name") == c.get("name") for e, c in zip(existing, choices))
+        )
+        if same_data:
             for i, card in enumerate(existing):
                 card.set_selected(i == selected)
         else:
@@ -2068,9 +2072,11 @@ def _defense_score(pokemon_types: list, poke_type: str) -> float:
     return mult
 
 
-def _catch_recommend_score(pokemon_types: list, boss_types: list[str]) -> float:
+def _catch_recommend_score(pokemon_types: list, boss_types: list[str],
+                           team_type_coverage: set | None = None) -> float:
     """Weighted resistance score vs upcoming bosses (higher = better catch).
-    weights 3/2/1 for boss N, N+1, N+2. resistance = 1 / dmg_taken."""
+    weights 3/2/1 for boss N, N+1, N+2. resistance = 1 / dmg_taken.
+    x0.5 penalty per type already covered by the current team."""
     weights = [3, 2, 1]
     total = 0.0
     for i, bt in enumerate(boss_types[:3]):
@@ -2079,6 +2085,10 @@ def _catch_recommend_score(pokemon_types: list, boss_types: list[str]) -> float:
         dmg = _defense_score(pokemon_types, bt)
         resistance = (1.0 / dmg) if dmg else 4.0
         total += resistance * weights[i]
+    if team_type_coverage:
+        for t in pokemon_types:
+            if t.capitalize() in team_type_coverage:
+                total *= 0.5
     return total
 
 
@@ -3057,6 +3067,7 @@ class PokelikeApp(App):
         self.prioritize_heal_on   = [False]
         self.poke_recommend_on    = [True]
         self._upcoming_boss_types: list = []
+        self._team_type_coverage: set  = set()
         self.best_level_path = [[]]
         self._last_level_path_key  = None
         self._follow_last_accessible: frozenset = frozenset()
@@ -3216,17 +3227,24 @@ class PokelikeApp(App):
                     and self.poke_recommend_on[0]
                     and self._upcoming_boss_types):
                 choices = new_state.get("choices", [])
-                scores  = [_catch_recommend_score(c.get("types", []), self._upcoming_boss_types)
+                scores  = [_catch_recommend_score(c.get("types", []), self._upcoming_boss_types,
+                                                   self._team_type_coverage)
                            for c in choices]
                 if scores:
                     self.selected = scores.index(max(scores))
             self._handle_screen_change_ui(prev, new_screen)
 
-        # Cache upcoming boss types whenever map is parsed
+        # Cache upcoming boss types and team type coverage whenever map is parsed
         if new_screen == ScreenType.MAP:
             ubt = new_state.get("upcoming_boss_types", [])
             if ubt:
                 self._upcoming_boss_types = ubt
+            self._team_type_coverage = {
+                t.capitalize()
+                for p in new_state.get("team", [])
+                for t in p.get("types", [])
+                if t
+            }
 
         # Path logic — runs before _rebuild() so cursor is correct on first render
         _target_node_idx = None
@@ -3412,7 +3430,8 @@ class PokelikeApp(App):
             rec_idx: int | None = None
             if self.poke_recommend_on[0] and self._upcoming_boss_types:
                 scores = [
-                    _catch_recommend_score(c.get("types", []), self._upcoming_boss_types)
+                    _catch_recommend_score(c.get("types", []), self._upcoming_boss_types,
+                                           self._team_type_coverage)
                     for c in choices
                 ]
                 if scores:
@@ -4037,10 +4056,11 @@ class PokelikeApp(App):
                     f"{bt} ×{weights[i]}" for i, bt in enumerate(boss_types[:3])
                 )
                 lines.append(f"\nCatch Recommendation  (boss types: {boss_labels})\n")
+                coverage = self._team_type_coverage
                 scored = []
                 for c in choices:
                     ptypes = c.get("types", [])
-                    total  = _catch_recommend_score(ptypes, boss_types)
+                    total  = _catch_recommend_score(ptypes, boss_types, coverage)
                     scored.append((c, ptypes, total))
                 scored.sort(key=lambda x: -x[2])
                 for rank, (c, ptypes, total) in enumerate(scored):
@@ -4056,6 +4076,9 @@ class PokelikeApp(App):
                         lines.append(
                             f"      {bt:<14} (×{weights[i]}):  dmg={dmg:.2f}  res={res:.2f}  → {contribution:.2f}"
                         )
+                    overlapping = [t for t in ptypes if t.capitalize() in coverage]
+                    if overlapping:
+                        lines.append(f"      team overlap: {'/'.join(overlapping)}  → ×0.5 per type")
 
             self.call_from_thread(self.push_screen, JsonScreen("\n".join(lines)))
         elif isinstance(result, str) and result.startswith("SET_STARTER:"):
