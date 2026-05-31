@@ -36,7 +36,7 @@ def detect(page: Page) -> ScreenType:
             if (vis('.swap-prompt'))        return 'TEAM_FULL'
             if (vis('.battle-header'))      return 'BATTLE'
             if (vis('.shiny-title'))        return 'POKEMON_RECEIVED'
-            if (vis('.poke-choice-wrap'))   return 'CATCH_POKEMON'
+            if (vis('.screen.active .poke-choice-wrap'))   return 'CATCH_POKEMON'
             if (vis('.item-equip-overlay')) return 'ITEM_EQUIP'
             if (vis('.trade-member-row'))   return 'TRADE_OFFER'
             if (vis('.item-card'))          return 'ITEM_SELECT'

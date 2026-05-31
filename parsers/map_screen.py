@@ -56,12 +56,13 @@ class MapParser(AbstractParser):
         stage           = static["stage"]
         stage["boss_team"] = static["boss_team"]
         return {
-            "screen": "map",
-            "stage":  stage,
-            "team":   team,
-            "bag":    static["bag"],
-            "badges": static["badges"],
-            "nodes":  self._process_nodes(static["nodes"], static.get("bossType", "")),
+            "screen":              "map",
+            "stage":               stage,
+            "team":                team,
+            "bag":                 static["bag"],
+            "badges":              static["badges"],
+            "nodes":               self._process_nodes(static["nodes"], static.get("bossType", "")),
+            "upcoming_boss_types": static.get("upcomingBossTypes", []),
         }
 
     # ------------------------------------------------------------------ team (1 round-trip)
@@ -208,7 +209,20 @@ class MapParser(AbstractParser):
                     bossType = leaders?.[mapIdx]?.type || ''
                 } catch(e) {}
 
-                return { stage, boss_team, bag, badges, nodes, bossType }
+                // --- upcoming boss types (current + next 2 stages) ---
+                let upcomingBossTypes = []
+                try {
+                    const mapIdx3  = run.currentMap ?? (typeof state !== 'undefined' ? state.currentMap : null)
+                    const gen2c    = run.gen2Mode || (typeof state !== 'undefined' ? !!state.gen2Mode : false)
+                    const leaders3 = gen2c ? JOHTO_GYM_LEADERS : GYM_LEADERS
+                    if (mapIdx3 !== null) {
+                        upcomingBossTypes = [0, 1, 2]
+                            .map(i => leaders3?.[mapIdx3 + i]?.type || '')
+                            .filter(t => t)
+                    }
+                } catch(e) {}
+
+                return { stage, boss_team, bag, badges, nodes, bossType, upcomingBossTypes }
             }""")
         except Exception:
             return {"stage": {"number": None, "boss": None, "boss_type": None},

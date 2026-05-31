@@ -477,7 +477,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
                     swap_source=None, bag_mode=None,
                     utils_mode=None, level_path_on=None,
                     follow_path_on=None, prioritize_catch_on=None,
-                    prioritize_heal_on=None, autoswap_on=None) -> list[MenuItem]:
+                    prioritize_heal_on=None, autoswap_on=None,
+                    poke_recommend_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -501,6 +502,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         as_on  = autoswap_on         is not None and autoswap_on[0]
         pc_on  = prioritize_catch_on is not None and prioritize_catch_on[0]
         ph_on  = prioritize_heal_on  is not None and prioritize_heal_on[0]
+        pr_on  = poke_recommend_on   is not None and poke_recommend_on[0]
         def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
         def toggle_lp():
             if level_path_on is not None: level_path_on[0] = not level_path_on[0]
@@ -517,12 +519,16 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         def toggle_ph():
             if prioritize_heal_on is not None: prioritize_heal_on[0] = not prioritize_heal_on[0]
             return "Level Path toggled"
+        def toggle_pr():
+            if poke_recommend_on is not None: poke_recommend_on[0] = not poke_recommend_on[0]
+            return "Poke. Recommend toggled"
         return [
             MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
             MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
             MenuItem(_lbl("Autoswap",          as_on), "A", toggle_as),
             MenuItem(_lbl("Prio. First Catch", pc_on), "C", toggle_pc),
             MenuItem(_lbl("Prio. Heal",        ph_on), "H", toggle_ph),
+            MenuItem(_lbl("Poke. Recommend",   pr_on), "R", toggle_pr),
             MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -664,7 +670,7 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
 
     def pick(idx):
         def _action():
-            page.locator(".poke-choice-wrap").nth(idx).click()
+            page.locator(".screen.active .poke-choice-wrap").nth(idx).click()
             return f"Selected {choices[idx]['name']}"
         return _action
 
@@ -1038,7 +1044,7 @@ def _dom_hash(page, screen: ScreenType) -> str:
             const bt = q('.battle-header')?.innerText || ''
             const nd = document.querySelectorAll('.screen.active svg g').length
             const it = document.querySelectorAll('.item-card').length
-            const pc = document.querySelectorAll('.poke-choice-wrap').length
+            const pc = document.querySelectorAll('.screen.active .poke-choice-wrap').length
             return `${hp}|${sl}|${bt}|${nd}|${it}|${pc}`
         }""")
     except Exception:
@@ -1125,20 +1131,28 @@ class PokemonCard(Widget):
         width: auto; height: 1; padding: 0 1; margin-top: 0; text-style: bold;
     }
     /* move-type-badge inherits .type-* colours above */
+    PokemonCard.recommended { border: round #00e676; }
+    .card-rec { color: #00e676; text-style: bold; margin-bottom: 1; }
     """
 
-    def __init__(self, choice: dict, shortcut: str, is_selected: bool) -> None:
+    def __init__(self, choice: dict, shortcut: str, is_selected: bool,
+                 is_recommended: bool = False) -> None:
         super().__init__()
-        self._choice    = choice
-        self._shortcut  = shortcut
+        self._choice         = choice
+        self._shortcut       = shortcut
+        self._is_recommended = is_recommended
         if is_selected:
             self.add_class("selected")
+        if is_recommended:
+            self.add_class("recommended")
         if choice.get("is_shiny"):
             self.add_class("shiny")
 
     def compose(self) -> ComposeResult:
         c = self._choice
 
+        if self._is_recommended:
+            yield Label("▲ REC", classes="card-rec")
         shiny_tag = "  ★ SHINY" if c.get("is_shiny") else ""
         yield Label(f"[ {self._shortcut} ]{shiny_tag}", classes="card-shortcut")
 
@@ -1185,6 +1199,10 @@ class PokemonCard(Widget):
     def set_selected(self, value: bool) -> None:
         self.set_class(value, "selected")
 
+    def set_recommended(self, value: bool) -> None:
+        self._is_recommended = value
+        self.set_class(value, "recommended")
+
 
 class CatchPokemonPanel(Widget):
     """Horizontal row of PokémonCards + a compact action strip below."""
@@ -1218,20 +1236,26 @@ class CatchPokemonPanel(Widget):
         yield Horizontal(id="catch-cards")
         yield Horizontal(id="catch-strip")
 
-    def rebuild(self, choices: list, strip_items: list[MenuItem], selected: int) -> None:
+    def rebuild(self, choices: list, strip_items: list[MenuItem], selected: int,
+                recommended_idx: int | None = None) -> None:
         shortcuts = "123456789"
 
         cards_row = self.query_one("#catch-cards")
         existing  = list(cards_row.query(PokemonCard))
 
-        if len(existing) == len(choices):
-            # In-place update — no flicker
+        same_data = (
+            len(existing) == len(choices)
+            and all(e._choice.get("name") == c.get("name") for e, c in zip(existing, choices))
+        )
+        if same_data:
             for i, card in enumerate(existing):
                 card.set_selected(i == selected)
+                card.set_recommended(i == recommended_idx)
         else:
             cards_row.query(PokemonCard).remove()
             cards_row.mount(*[
-                PokemonCard(c, shortcuts[i] if i < len(shortcuts) else "?", i == selected)
+                PokemonCard(c, shortcuts[i] if i < len(shortcuts) else "?",
+                            i == selected, i == recommended_idx)
                 for i, c in enumerate(choices)
             ])
 
@@ -2015,23 +2039,47 @@ def _node_score(node_type: str) -> float:
     return _NODE_SCORE.get(node_type, 0.0)
 
 def _autoswap_score(pokemon_types: list, poke_type: str) -> float:
-    """Our attack effectiveness vs opponent (higher = better)."""
-    if not poke_type or "/" in poke_type:
+    """Our attack effectiveness vs opponent (higher = better).
+    Multiplies across all trainer types (dual-type = x2*x0.5 = x1.0)."""
+    if not poke_type:
+        return 1.0
+    trainer_types = [t.strip().capitalize() for t in poke_type.split("/") if t.strip()]
+    if not trainer_types:
         return 1.0
     attack = (pokemon_types[0] if pokemon_types else "").capitalize()
-    defend = poke_type.strip().capitalize()
-    return _TYPE_CHART.get(attack, {}).get(defend, 1.0)
+    mult = 1.0
+    for tt in trainer_types:
+        mult *= _TYPE_CHART.get(attack, {}).get(tt, 1.0)
+    return mult
 
 
 def _defense_score(pokemon_types: list, poke_type: str) -> float:
-    """Damage multiplier opponent deals to our pokemon (lower = better, 0.5 > 1.0 > 2.0)."""
-    if not poke_type or "/" in poke_type:
+    """Damage multiplier opponent deals to our pokemon (lower = better, 0.5 > 1.0 > 2.0).
+    Multiplies across all trainer attack types and our own types."""
+    if not poke_type:
         return 1.0
-    attack = poke_type.strip().capitalize()
+    trainer_types = [t.strip().capitalize() for t in poke_type.split("/") if t.strip()]
+    if not trainer_types:
+        return 1.0
     mult = 1.0
-    for t in pokemon_types:
-        mult *= _TYPE_CHART.get(attack, {}).get(t.capitalize(), 1.0)
+    for attack in trainer_types:
+        for t in pokemon_types:
+            mult *= _TYPE_CHART.get(attack, {}).get(t.capitalize(), 1.0)
     return mult
+
+
+def _catch_recommend_score(pokemon_types: list, boss_types: list[str]) -> float:
+    """Weighted resistance score vs upcoming bosses (higher = better catch).
+    weights 3/2/1 for boss N, N+1, N+2. resistance = 1 / dmg_taken."""
+    weights = [3, 2, 1]
+    total = 0.0
+    for i, bt in enumerate(boss_types[:3]):
+        if not bt:
+            continue
+        dmg = _defense_score(pokemon_types, bt)
+        resistance = (1.0 / dmg) if dmg else 4.0
+        total += resistance * weights[i]
+    return total
 
 
 def _compute_autoswap_order(team: list, poke_type: str) -> list[int]:
@@ -3007,6 +3055,8 @@ class PokelikeApp(App):
         self.autoswap_on          = [False]
         self.prioritize_catch_on  = [False]
         self.prioritize_heal_on   = [False]
+        self.poke_recommend_on    = [True]
+        self._upcoming_boss_types: list = []
         self.best_level_path = [[]]
         self._last_level_path_key  = None
         self._follow_last_accessible: frozenset = frozenset()
@@ -3162,7 +3212,21 @@ class PokelikeApp(App):
         if changed:
             self.selected = 0
             self.map_carousel_idx = 0
+            if (new_screen == ScreenType.CATCH_POKEMON
+                    and self.poke_recommend_on[0]
+                    and self._upcoming_boss_types):
+                choices = new_state.get("choices", [])
+                scores  = [_catch_recommend_score(c.get("types", []), self._upcoming_boss_types)
+                           for c in choices]
+                if scores:
+                    self.selected = scores.index(max(scores))
             self._handle_screen_change_ui(prev, new_screen)
+
+        # Cache upcoming boss types whenever map is parsed
+        if new_screen == ScreenType.MAP:
+            ubt = new_state.get("upcoming_boss_types", [])
+            if ubt:
+                self._upcoming_boss_types = ubt
 
         # Path logic — runs before _rebuild() so cursor is correct on first render
         _target_node_idx = None
@@ -3344,13 +3408,21 @@ class PokelikeApp(App):
                     pass
 
         elif is_catch:
-            items_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected)
+            choices     = self.state.get("choices", [])
+            rec_idx: int | None = None
+            if self.poke_recommend_on[0] and self._upcoming_boss_types:
+                scores = [
+                    _catch_recommend_score(c.get("types", []), self._upcoming_boss_types)
+                    for c in choices
+                ]
+                if scores:
+                    rec_idx = scores.index(max(scores))
+            items_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected, rec_idx)
             if items_key != self._last_items_key:
                 self._last_items_key = items_key
-                choices    = self.state.get("choices", [])
                 strip_items = self._items[len(choices):]
                 try:
-                    self.query_one(CatchPokemonPanel).rebuild(choices, strip_items, self.selected)
+                    self.query_one(CatchPokemonPanel).rebuild(choices, strip_items, self.selected, rec_idx)
                 except Exception:
                     pass
             return
@@ -3557,6 +3629,7 @@ class PokelikeApp(App):
                 self.selected_starter, self.swap_source, self.bag_mode,
                 self.utils_mode, self.level_path_on, self.follow_path_on,
                 self.prioritize_catch_on, self.prioritize_heal_on, self.autoswap_on,
+                self.poke_recommend_on,
             )
 
         self.swap_source[0] = None
@@ -3580,6 +3653,9 @@ class PokelikeApp(App):
             def _toggle_ph():
                 self.prioritize_heal_on[0] = not self.prioritize_heal_on[0]
                 return "Level Path toggled"
+            def _toggle_pr():
+                self.poke_recommend_on[0] = not self.poke_recommend_on[0]
+                return "Poke. Recommend toggled"
             def _cancel_utils():
                 self.utils_mode[0] = False
                 return "UTILS_CANCELLED"
@@ -3589,6 +3665,7 @@ class PokelikeApp(App):
                 MenuItem(_lbl("Autoswap",           self.autoswap_on[0]),         "A", _toggle_as),
                 MenuItem(_lbl("Prio. First Catch",  self.prioritize_catch_on[0]), "C", _toggle_pc),
                 MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),  "H", _toggle_ph),
+                MenuItem(_lbl("Poke. Recommend",    self.poke_recommend_on[0]),   "R", _toggle_pr),
                 MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
                 MenuItem("Cancel", "X", _cancel_utils),
                 MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -3950,6 +4027,35 @@ class PokelikeApp(App):
                         f"  {rank+1}. {name:<12} Lv{lv:<3}  [{types}]"
                         f"  atk×{atk:.1f}  def×{dfn:.1f}"
                     )
+
+            # ── Catch recommendation ─────────────────────────────────
+            if self.game_screen == ScreenType.CATCH_POKEMON and self._upcoming_boss_types:
+                choices = self.state.get("choices", [])
+                boss_types = self._upcoming_boss_types
+                weights = [3, 2, 1]
+                boss_labels = "  ".join(
+                    f"{bt} ×{weights[i]}" for i, bt in enumerate(boss_types[:3])
+                )
+                lines.append(f"\nCatch Recommendation  (boss types: {boss_labels})\n")
+                scored = []
+                for c in choices:
+                    ptypes = c.get("types", [])
+                    total  = _catch_recommend_score(ptypes, boss_types)
+                    scored.append((c, ptypes, total))
+                scored.sort(key=lambda x: -x[2])
+                for rank, (c, ptypes, total) in enumerate(scored):
+                    star  = "★ " if rank == 0 else "  "
+                    tstr  = "/".join(ptypes)
+                    lines.append(f"  {star}{c.get('name','?'):<14} [{tstr:<16}]  total = {total:.2f}")
+                    for i, bt in enumerate(boss_types[:3]):
+                        if not bt:
+                            continue
+                        dmg = _defense_score(ptypes, bt)
+                        res = (1.0 / dmg) if dmg else 4.0
+                        contribution = res * weights[i]
+                        lines.append(
+                            f"      {bt:<14} (×{weights[i]}):  dmg={dmg:.2f}  res={res:.2f}  → {contribution:.2f}"
+                        )
 
             self.call_from_thread(self.push_screen, JsonScreen("\n".join(lines)))
         elif isinstance(result, str) and result.startswith("SET_STARTER:"):

@@ -6,7 +6,7 @@ from parsers.base import AbstractParser
 class CatchPokemonParser(AbstractParser):
     def parse(self, page: Page) -> dict:
         choices = []
-        for wrap in page.locator(".poke-choice-wrap").all():
+        for wrap in page.locator(".screen.active .poke-choice-wrap").all():
             choices.append(self._parse_card(wrap))
         return {
             "screen": "catch_pokemon",

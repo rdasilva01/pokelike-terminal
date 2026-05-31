@@ -61,6 +61,20 @@ Several screens use 2D grid navigation instead of a flat list:
 - **Swap / Item-pick**: left team panel becomes a navigable 3×2 grid; strip shows Cancel/Quit only
 - **Bag**: strip shows bag items (flat navigation)
 
+### Utils menu (U key on map or catch/item/trade/team-full screens)
+
+| Toggle | Key | Default | Effect |
+|--------|-----|---------|--------|
+| Level Path | U | ON | Highlights highest-score path to boss in `MapGraphWidget` |
+| Follow Path | F | OFF | Auto-clicks next node in best path (skips boss) |
+| Autoswap | A | OFF | Reorders team by type matchup before entering a trainer/boss node |
+| Prio. First Catch | C | OFF | +10 bonus to catch nodes in path scoring |
+| Prio. Heal | H | OFF | +10 bonus to pokecenter nodes in path scoring |
+| Poke. Recommend | R | ON | Highlights best catch choice based on upcoming 3 boss types; defaults cursor to it |
+| Debug | G | — | Overlay showing path scores + catch recommendation breakdown with per-boss weights |
+
+All toggle states are stored as 1-element lists (`[bool]`) on the `PokelikeApp` instance so closures can mutate them.
+
 The UI auto-refreshes state every **0.1 seconds** (`AUTO_REFRESH_INTERVAL` in `interactor.py`). A DOM hash pre-check skips full re-parses when nothing changed. `_force_parse` is set after any action to guarantee a fresh parse on the next cycle.
 
 ## Pokédex overlay
@@ -111,9 +125,21 @@ Each special screen has a dedicated Textual widget instead of the default Action
 | Item select | `ItemSelectPanel` | Horizontal cards + strip |
 | Team full | `TeamFullPanel` | Incoming label + 2×3 grid + strip |
 
+### Type-effectiveness scoring (`interactor.py`)
+
+Three helper functions drive both Autoswap and Poke. Recommend:
+
+- `_autoswap_score(pokemon_types, poke_type)` — our Pokémon's attack effectiveness vs the trainer. Multiplies across all of the trainer's types (dual-type = 2.0×0.5 = 1.0).
+- `_defense_score(pokemon_types, poke_type)` — damage multiplier the trainer deals to us. Multiplies across every (trainer_type × our_type) combination.
+- `_catch_recommend_score(pokemon_types, boss_types)` — weighted resistance sum vs the next 3 bosses: `Σ (1 / _defense_score) × weight` with weights 3/2/1. Higher = better catch.
+
+### Map state fields
+
+`MapParser.parse()` returns `upcoming_boss_types: list[str]` — the types of the current stage's boss plus the next two, fetched from `GYM_LEADERS[currentMap..+2]` in one JS call. The interactor caches this as `self._upcoming_boss_types` and uses it on the catch screen.
+
 ### Performance
 
-- `MapParser` uses **2 `page.evaluate()` calls**: `_parse_team()` (DOM + localStorage in one JS shot) and `_parse_static()` (header, boss, bag, badges, nodes — all merged).
+- `MapParser` uses **2 `page.evaluate()` calls**: `_parse_team()` (DOM + localStorage in one JS shot) and `_parse_static()` (header, boss, bag, badges, nodes, upcoming boss types — all merged).
 - `_dom_hash()` runs one cheap JS call per cycle; identical hash + same screen = skip full parse.
 - `_force_parse` flag is set after any action to guarantee a fresh parse on the next cycle regardless of hash.
 
@@ -125,6 +151,7 @@ Each special screen has a dedicated Textual widget instead of the default Action
 - Screen detection uses a single `page.evaluate()` JS call checking DOM fingerprints in priority order.
 - Clicking is done via `page.evaluate()` JS to avoid Playwright locator timeouts.
 - Team full screen: `.swap-prompt` is the unique fingerprint; last `.poke-card` in `.screen.active` is the incoming pokemon; the rest are the current team.
+- **Always scope catch-screen selectors to `.screen.active`** — inactive screens remain in the DOM (e.g. a shiny card from a rejected shiny event keeps its `.poke-choice-wrap`). The catch parser, screen detector fingerprint, click action, and DOM hash all use `.screen.active .poke-choice-wrap`.
 
 ## Adding a New Screen Parser
 

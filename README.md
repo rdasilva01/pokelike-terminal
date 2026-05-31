@@ -20,6 +20,18 @@ Connects to an open Chrome window via CDP, detects the current game screen, pars
 - Auto-clicks starter select, badge screen, game over, and evolution screens
 - Launches Chrome automatically via `launcher.py`
 
+### Utils menu (U on map or catch/item/trade screens)
+
+| Toggle | Key | Default | Description |
+|--------|-----|---------|-------------|
+| Level Path | U | ON | Highlights the highest-score path to the boss |
+| Follow Path | F | OFF | Auto-clicks the next node in the best path |
+| Autoswap | A | OFF | Reorders team by type matchup before battles |
+| Prio. First Catch | C | OFF | Boosts catch nodes in path scoring |
+| Prio. Heal | H | OFF | Boosts Pokémon Center nodes in path scoring |
+| Poke. Recommend | R | ON | Highlights the best catch based on next 3 bosses |
+| Debug | G | — | Shows path scores and catch recommendation breakdown |
+
 ## Requirements
 
 - Python 3.11+
@@ -103,7 +115,7 @@ Press **Esc** to close the overlay.
 | Starter select | Horizontal cards | Name, level, types, move per starter |
 | Map | Team grid + graph + bag/boss + node strip | Stage/boss, team HP/moves/types, bag, badges, all nodes |
 | Battle | Two side-panels (3×2 each) + strip | Both teams: HP, active/fainted, continue-ready |
-| Catch Pokémon | Horizontal cards + strip | Choices: level, types, shiny/caught flags, stats, move |
+| Catch Pokémon | Horizontal cards + strip | Choices: level, types, shiny/caught flags, stats, move — recommended card highlighted in green |
 | Item select | Horizontal cards + strip | Item names and descriptions |
 | Item equip / Move tutor | Scrollable list | Per-Pokémon equip or teach options |
 | Trade offer | Default list | Trade members with types and level |
