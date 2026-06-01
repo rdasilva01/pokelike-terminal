@@ -96,6 +96,13 @@ class MapParser(AbstractParser):
                             if (el) { held = el.innerText.trim() || el.alt || el.title || ''; if (held) break }
                         }
                     }
+                    const rawMoves = ls.moves || ls.moveset || ls.learnedMoves || []
+                    const moveTypes = [...new Set(
+                        rawMoves
+                            .map(m => m?.type || m?.moveType || m?.move?.type || '')
+                            .filter(t => t)
+                            .map(t => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
+                    )]
                     return {
                         name,
                         level:      lv,
@@ -104,6 +111,7 @@ class MapParser(AbstractParser):
                         hp_max:     ls.maxHp       ?? null,
                         move_tier:  ls.moveTier    ?? null,
                         types:      ls.types       || [],
+                        move_types: moveTypes,
                         held_item:  held           || null,
                     }
                 })
