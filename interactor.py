@@ -295,7 +295,8 @@ class BagPanel(Static):
 
     def update_bag(self, bag: list, follow_on: bool = False,
                    heal_on: bool = False, catch_on: bool = False,
-                   autoswap_on: bool = False, autobattle_on: bool = False) -> None:
+                   autoswap_on: bool = False, autobattle_on: bool = False,
+                   mystery_on: bool = False, catches_on: bool = False) -> None:
         t = Text()
         if bag:
             for item in bag:
@@ -314,6 +315,8 @@ class BagPanel(Static):
         _row("T", "Autobattle  ", autobattle_on)
         _row("H", "Prio. Heal  ", heal_on)
         _row("C", "Prio. Catch ", catch_on)
+        _row("M", "Prio. Mystery", mystery_on)
+        _row("N", "Prio. Catches", catches_on)
         t.append("\n")
         t.append("R  refresh\n", style="dim #555577")
         t.append("J  raw json",  style="dim #555577")
@@ -494,7 +497,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
                     follow_path_on=None, prioritize_catch_on=None,
                     prioritize_heal_on=None, autoswap_on=None,
                     poke_recommend_on=None, item_recommend_on=None,
-                    autobattle_on=None, prioritize_mystery_on=None) -> list[MenuItem]:
+                    autobattle_on=None, prioritize_mystery_on=None,
+                    prioritize_shiny_on=None, prioritize_catches_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -522,6 +526,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ir_on  = item_recommend_on   is not None and item_recommend_on[0]
         ab_on  = autobattle_on       is not None and autobattle_on[0]
         pm_on  = prioritize_mystery_on is not None and prioritize_mystery_on[0]
+        ps_on  = prioritize_shiny_on   is not None and prioritize_shiny_on[0]
+        pca_on = prioritize_catches_on is not None and prioritize_catches_on[0]
         def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
         def toggle_lp():
             if level_path_on is not None: level_path_on[0] = not level_path_on[0]
@@ -550,6 +556,12 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         def toggle_pm():
             if prioritize_mystery_on is not None: prioritize_mystery_on[0] = not prioritize_mystery_on[0]
             return "Level Path toggled"
+        def toggle_ps():
+            if prioritize_shiny_on is not None: prioritize_shiny_on[0] = not prioritize_shiny_on[0]
+            return "Poke. Recommend toggled"
+        def toggle_pca():
+            if prioritize_catches_on is not None: prioritize_catches_on[0] = not prioritize_catches_on[0]
+            return "Level Path toggled"
         return [
             MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
             MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
@@ -560,6 +572,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
             MenuItem(_lbl("Item Recommend",    ir_on), "I", toggle_ir),
             MenuItem(_lbl("Autobattle",        ab_on), "T", toggle_ab),
             MenuItem(_lbl("Prio. Mystery",     pm_on), "M", toggle_pm),
+            MenuItem(_lbl("Prio. Shiny",       ps_on),  "S", toggle_ps),
+            MenuItem(_lbl("Prio. Catches",     pca_on), "N", toggle_pca),
             MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -2169,9 +2183,10 @@ def _compute_autoswap_order(team: list, poke_type: str) -> list[int]:
     return [i for i, _, _, _ in scored]
 
 
-def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool, prioritize_mystery: bool = False):
+def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool,
+                      prioritize_mystery: bool = False, prioritize_catches: bool = False):
     """Return an extra_score(idx, node) function for the active priority toggles."""
-    if not prioritize_catch and not prioritize_heal and not prioritize_mystery:
+    if not prioritize_catch and not prioritize_heal and not prioritize_mystery and not prioritize_catches:
         return None
     def _extra(idx: int, node: dict) -> float:
         bonus = 0.0
@@ -2180,6 +2195,8 @@ def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool, prioritize_
         if prioritize_heal and node.get("type") == "pokecenter":
             bonus += 10.0
         if prioritize_mystery and node.get("type") == "mystery":
+            bonus += 10.0
+        if prioritize_catches and node.get("type") == "catch_pokemon":
             bonus += 10.0
         return bonus
     return _extra
@@ -3133,9 +3150,11 @@ class PokelikeApp(App):
         self.autobattle_on        = [False]
         self.prioritize_catch_on  = [False]
         self.prioritize_heal_on   = [False]
-        self.prioritize_mystery_on = [False]
+        self.prioritize_mystery_on  = [False]
+        self.prioritize_catches_on  = [False]
         self.poke_recommend_on    = [True]
         self.item_recommend_on    = [True]
+        self.prioritize_shiny_on  = [True]
         self._item_points_cache: dict[str, int] = {}
         self._team_attack_types: set = set()
         self._upcoming_boss_types: list = []
@@ -3304,6 +3323,7 @@ class PokelikeApp(App):
                 choices = new_state.get("choices", [])
                 scores  = [_catch_recommend_score(c.get("types", []), self._upcoming_boss_types,
                                                    self._team_type_coverage)
+                           + (50 if self.prioritize_shiny_on[0] and c.get("is_shiny") else 0)
                            for c in choices]
                 if scores:
                     self.selected = scores.index(max(scores))
@@ -3353,7 +3373,7 @@ class PokelikeApp(App):
                 completed_idxs = [i for i, n in enumerate(_nodes) if n.get("state") == "completed"]
                 last_done = max(completed_idxs) if completed_idxs else 0
                 path = _compute_best_level_path(_nodes, last_done,
-                    _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0], self.prioritize_mystery_on[0]))
+                    _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0], self.prioritize_mystery_on[0], self.prioritize_catches_on[0]))
                 _acc_list = [n["index"] for n in _nodes if n["accessible"]]
                 for node_idx in path:
                     if node_idx >= len(_nodes): continue
@@ -3378,8 +3398,8 @@ class PokelikeApp(App):
             if self.follow_path_on[0] and (_nodes[_target_node_idx].get("type") != "boss" or self.autobattle_on[0]):
                 self._execute_item(_acc_list.index(_target_node_idx))
 
-        # Auto-item: if Follow Path is on and we just entered the item select screen, pick the recommended item
-        if new_screen == ScreenType.ITEM_SELECT and new_screen != prev and self.follow_path_on[0]:
+        # Auto-item: if Follow Path and Item Recommend are on, auto-pick the recommended item
+        if new_screen == ScreenType.ITEM_SELECT and new_screen != prev and self.follow_path_on[0] and self.item_recommend_on[0]:
             def do_auto_item():
                 if self._items and self.selected < len(self._items):
                     return self._items[self.selected].action()
@@ -3518,6 +3538,8 @@ class PokelikeApp(App):
                     catch_on=self.prioritize_catch_on[0],
                     autoswap_on=self.autoswap_on[0],
                     autobattle_on=self.autobattle_on[0],
+                    mystery_on=self.prioritize_mystery_on[0],
+                    catches_on=self.prioritize_catches_on[0],
                 )
             except Exception:
                 pass
@@ -3538,11 +3560,11 @@ class PokelikeApp(App):
             if self.level_path_on[0]:
                 lp_key = (last_completed, tuple(n.get("type", "") for n in nodes_all),
                           self.prioritize_catch_on[0], self.prioritize_heal_on[0],
-                          self.prioritize_mystery_on[0])
+                          self.prioritize_mystery_on[0], self.prioritize_catches_on[0])
                 if lp_key != self._last_level_path_key:
                     self._last_level_path_key = lp_key
                     self.best_level_path[0] = _compute_best_level_path(nodes_all, last_completed,
-                        _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0], self.prioritize_mystery_on[0]))
+                        _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0], self.prioritize_mystery_on[0], self.prioritize_catches_on[0]))
             elif not self.level_path_on[0]:
                 self._last_level_path_key = None
                 self.best_level_path[0] = []
@@ -3575,6 +3597,7 @@ class PokelikeApp(App):
                 scores = [
                     _catch_recommend_score(c.get("types", []), self._upcoming_boss_types,
                                            self._team_type_coverage)
+                    + (50 if self.prioritize_shiny_on[0] and c.get("is_shiny") else 0)
                     for c in choices
                 ]
                 if scores:
@@ -3802,6 +3825,8 @@ class PokelikeApp(App):
                 self.poke_recommend_on, self.item_recommend_on,
                 autobattle_on=self.autobattle_on,
                 prioritize_mystery_on=self.prioritize_mystery_on,
+                prioritize_shiny_on=self.prioritize_shiny_on,
+                prioritize_catches_on=self.prioritize_catches_on,
             )
 
         self.swap_source[0] = None
@@ -3837,6 +3862,12 @@ class PokelikeApp(App):
             def _toggle_pm():
                 self.prioritize_mystery_on[0] = not self.prioritize_mystery_on[0]
                 return "Level Path toggled"
+            def _toggle_ps():
+                self.prioritize_shiny_on[0] = not self.prioritize_shiny_on[0]
+                return "Poke. Recommend toggled"
+            def _toggle_pca():
+                self.prioritize_catches_on[0] = not self.prioritize_catches_on[0]
+                return "Level Path toggled"
             def _cancel_utils():
                 self.utils_mode[0] = False
                 return "UTILS_CANCELLED"
@@ -3850,6 +3881,8 @@ class PokelikeApp(App):
                 MenuItem(_lbl("Item Recommend",     self.item_recommend_on[0]),     "I", _toggle_ir),
                 MenuItem(_lbl("Autobattle",         self.autobattle_on[0]),         "T", _toggle_ab),
                 MenuItem(_lbl("Prio. Mystery",      self.prioritize_mystery_on[0]), "M", _toggle_pm),
+                MenuItem(_lbl("Prio. Shiny",        self.prioritize_shiny_on[0]),    "S", _toggle_ps),
+                MenuItem(_lbl("Prio. Catches",      self.prioritize_catches_on[0]),  "N", _toggle_pca),
                 MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
                 MenuItem("Cancel", "X", _cancel_utils),
                 MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -3881,7 +3914,7 @@ class PokelikeApp(App):
         items = self._items
         if not items:
             return
-        if key == "f":
+        if key == "f" and not self.utils_mode[0]:
             self.follow_path_on[0] = not self.follow_path_on[0]
             self._follow_last_accessible = frozenset()
         if key == "a" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
@@ -3896,6 +3929,18 @@ class PokelikeApp(App):
             return
         if key == "c" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
             self.prioritize_catch_on[0] = not self.prioritize_catch_on[0]
+            self._last_level_path_key = None
+            self._force_parse = True
+            self._rebuild()
+            return
+        if key == "m" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
+            self.prioritize_mystery_on[0] = not self.prioritize_mystery_on[0]
+            self._last_level_path_key = None
+            self._force_parse = True
+            self._rebuild()
+            return
+        if key == "n" and self.game_screen == ScreenType.MAP and not self.utils_mode[0]:
+            self.prioritize_catches_on[0] = not self.prioritize_catches_on[0]
             self._last_level_path_key = None
             self._force_parse = True
             self._rebuild()
@@ -4204,11 +4249,13 @@ class PokelikeApp(App):
                     self.prioritize_catch_on[0],
                     self.prioritize_heal_on[0],
                     self.prioritize_mystery_on[0],
+                    self.prioritize_catches_on[0],
                 )
                 prio_flags = []
-                if self.prioritize_catch_on[0]:   prio_flags.append("Catch")
+                if self.prioritize_catch_on[0]:   prio_flags.append("1st Catch")
                 if self.prioritize_heal_on[0]:    prio_flags.append("Heal")
                 if self.prioritize_mystery_on[0]: prio_flags.append("Mystery")
+                if self.prioritize_catches_on[0]: prio_flags.append("Catches")
                 prio_str = f"  [{', '.join(prio_flags)}]" if prio_flags else ""
                 total = sum(
                     _node_score(nodes[i].get("type", "")) + (extra_fn(i, nodes[i]) if extra_fn else 0)
@@ -4261,14 +4308,16 @@ class PokelikeApp(App):
                 coverage = self._team_type_coverage
                 scored = []
                 for c in choices:
-                    ptypes = c.get("types", [])
-                    total  = _catch_recommend_score(ptypes, boss_types, coverage)
-                    scored.append((c, ptypes, total))
+                    ptypes     = c.get("types", [])
+                    shiny_bonus = 50 if self.prioritize_shiny_on[0] and c.get("is_shiny") else 0
+                    total      = _catch_recommend_score(ptypes, boss_types, coverage) + shiny_bonus
+                    scored.append((c, ptypes, total, shiny_bonus))
                 scored.sort(key=lambda x: -x[2])
-                for rank, (c, ptypes, total) in enumerate(scored):
-                    star  = "★ " if rank == 0 else "  "
-                    tstr  = "/".join(ptypes)
-                    lines.append(f"  {star}{c.get('name','?'):<14} [{tstr:<16}]  total = {total:.2f}")
+                for rank, (c, ptypes, total, shiny_bonus) in enumerate(scored):
+                    star      = "★ " if rank == 0 else "  "
+                    tstr      = "/".join(ptypes)
+                    shiny_str = "  +50 shiny" if shiny_bonus else ""
+                    lines.append(f"  {star}{c.get('name','?'):<14} [{tstr:<16}]  total = {total:.2f}{shiny_str}")
                     for i, bt in enumerate(boss_types[:3]):
                         if not bt:
                             continue
