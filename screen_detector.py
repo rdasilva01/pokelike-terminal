@@ -41,8 +41,10 @@ def detect(page: Page) -> ScreenType:
             if (vis('.trade-member-row'))   return 'TRADE_OFFER'
             if (vis('.screen.active .item-card'))          return 'ITEM_SELECT'
             const btnsAll = Array.from(document.querySelectorAll('.btn-primary'))
+            if (vis('#stage-select-list'))  return 'STAGE_SELECT'
             if (btnsAll.some(b => b.textContent.includes('Next Map') && b.getBoundingClientRect().width > 0)) return 'BADGE_OBTAINED'
             if (btnsAll.some(b => b.textContent.trim() === 'Normal Mode' && b.getBoundingClientRect().width > 0)) return 'MAIN_MENU'
+            if (vis('.pc-box-grid'))            return 'TEAM_SELECT'
             const text = document.body.innerText || ''
             if (text.includes('Choose Your Starter')) return 'STARTER_SELECT'
             if (vis('.team-slot'))          return 'MAP'

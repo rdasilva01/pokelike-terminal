@@ -15,7 +15,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import (
     DataTable, Footer, Header, Input, Label, Static
@@ -28,6 +28,8 @@ from screen_detector import detect, ScreenType
 from parsers.battle import BattleParser
 from parsers.champion import ChampionParser
 from parsers.pokemon_received import PokemonReceivedParser
+from parsers.stage_select import StageSelectParser
+from parsers.team_select import TeamSelectParser
 from parsers.trade_offer import TradeOfferParser
 from parsers.catch_pokemon import CatchPokemonParser
 from parsers.item_equip import ItemEquipParser
@@ -44,6 +46,8 @@ PARSER_MAP = {
     ScreenType.BATTLE:           BattleParser(),
     ScreenType.TRADE_OFFER:      TradeOfferParser(),
     ScreenType.POKEMON_RECEIVED: PokemonReceivedParser(),
+    ScreenType.STAGE_SELECT:     StageSelectParser(),
+    ScreenType.TEAM_SELECT:      TeamSelectParser(),
     ScreenType.CATCH_POKEMON:    CatchPokemonParser(),
     ScreenType.ITEM_SELECT:      ItemSelectParser(),
     ScreenType.ITEM_EQUIP:       ItemEquipParser(),
@@ -515,70 +519,6 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         if utils_mode  is not None: utils_mode[0]  = False
         return msg
 
-    # ── utils sub-menu ────────────────────────────────────────────────
-    if utils_mode is not None and utils_mode[0]:
-        lp_on  = level_path_on       is not None and level_path_on[0]
-        fp_on  = follow_path_on      is not None and follow_path_on[0]
-        as_on  = autoswap_on         is not None and autoswap_on[0]
-        pc_on  = prioritize_catch_on is not None and prioritize_catch_on[0]
-        ph_on  = prioritize_heal_on  is not None and prioritize_heal_on[0]
-        pr_on  = poke_recommend_on   is not None and poke_recommend_on[0]
-        ir_on  = item_recommend_on   is not None and item_recommend_on[0]
-        ab_on  = autobattle_on       is not None and autobattle_on[0]
-        pm_on  = prioritize_mystery_on is not None and prioritize_mystery_on[0]
-        ps_on  = prioritize_shiny_on   is not None and prioritize_shiny_on[0]
-        pca_on = prioritize_catches_on is not None and prioritize_catches_on[0]
-        def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
-        def toggle_lp():
-            if level_path_on is not None: level_path_on[0] = not level_path_on[0]
-            return "Level Path toggled"
-        def toggle_fp():
-            if follow_path_on is not None: follow_path_on[0] = not follow_path_on[0]
-            return "FOLLOW_PATH_TOGGLED"
-        def toggle_as():
-            if autoswap_on is not None: autoswap_on[0] = not autoswap_on[0]
-            return "Level Path toggled"
-        def toggle_pc():
-            if prioritize_catch_on is not None: prioritize_catch_on[0] = not prioritize_catch_on[0]
-            return "Level Path toggled"
-        def toggle_ph():
-            if prioritize_heal_on is not None: prioritize_heal_on[0] = not prioritize_heal_on[0]
-            return "Level Path toggled"
-        def toggle_pr():
-            if poke_recommend_on is not None: poke_recommend_on[0] = not poke_recommend_on[0]
-            return "Poke. Recommend toggled"
-        def toggle_ir():
-            if item_recommend_on is not None: item_recommend_on[0] = not item_recommend_on[0]
-            return "Item Recommend toggled"
-        def toggle_ab():
-            if autobattle_on is not None: autobattle_on[0] = not autobattle_on[0]
-            return "AUTOBATTLE_TOGGLED"
-        def toggle_pm():
-            if prioritize_mystery_on is not None: prioritize_mystery_on[0] = not prioritize_mystery_on[0]
-            return "Level Path toggled"
-        def toggle_ps():
-            if prioritize_shiny_on is not None: prioritize_shiny_on[0] = not prioritize_shiny_on[0]
-            return "Poke. Recommend toggled"
-        def toggle_pca():
-            if prioritize_catches_on is not None: prioritize_catches_on[0] = not prioritize_catches_on[0]
-            return "Level Path toggled"
-        return [
-            MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
-            MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
-            MenuItem(_lbl("Autoswap",          as_on), "A", toggle_as),
-            MenuItem(_lbl("Prio. First Catch", pc_on), "C", toggle_pc),
-            MenuItem(_lbl("Prio. Heal",        ph_on), "H", toggle_ph),
-            MenuItem(_lbl("Poke. Recommend",   pr_on), "R", toggle_pr),
-            MenuItem(_lbl("Item Recommend",    ir_on), "I", toggle_ir),
-            MenuItem(_lbl("Autobattle",        ab_on), "T", toggle_ab),
-            MenuItem(_lbl("Prio. Mystery",     pm_on), "M", toggle_pm),
-            MenuItem(_lbl("Prio. Shiny",       ps_on),  "S", toggle_ps),
-            MenuItem(_lbl("Prio. Catches",     pca_on), "N", toggle_pca),
-            MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
-            MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
-            MenuItem("Quit",   "Q", lambda: "QUIT"),
-        ]
-
     if bag_mode is not None and bag_mode[0]:
         items = []
         for i, item in enumerate(bag):
@@ -697,9 +637,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         return "SHOW_POKEDEX"
 
     def enter_utils():
-        if utils_mode is not None:
-            utils_mode[0] = True
-        return "Utils menu"
+        return "SHOW_UTILS"
 
     items += [
         MenuItem("Utils",       "U", enter_utils),
@@ -719,6 +657,16 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
             return f"Selected {choices[idx]['name']}"
         return _action
 
+    def reroll(idx):
+        def _action():
+            page.evaluate("""(i) => {
+                const btn = document.querySelectorAll('.screen.active .poke-choice-wrap')[i]
+                    ?.querySelector('.reroll-btn')
+                if (btn) btn.click()
+            }""", idx)
+            return f"Rerolled slot {idx + 1}"
+        return _action
+
     def skip():
         page.evaluate("""() => {
             const btn = Array.from(document.querySelectorAll('button'))
@@ -727,6 +675,7 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
         }""")
         return "Skipped."
 
+    reroll_shortcuts = "!@#$%"
     items = []
     for i, c in enumerate(choices):
         shiny  = " ★" if c.get("is_shiny") else ""
@@ -734,6 +683,9 @@ def build_catch_pokemon_items(state: dict, page, refresh_fn: Callable, selected_
         types  = "/".join(c.get("types", []))
         label  = f"{c['name']}{shiny}{caught}  Lv{c['level']}  [{types}]"
         items.append(MenuItem(label, str(i + 1), pick(i)))
+
+    for i, c in enumerate(choices):
+        items.append(MenuItem(f"⟳ Reroll {c['name']}", reroll_shortcuts[i] if i < len(reroll_shortcuts) else "?", reroll(i)))
 
     items.append(MenuItem("Skip (flee)", "S", skip))
 
@@ -1018,6 +970,57 @@ def build_team_full_items(state: dict, page, refresh_fn: Callable, selected_star
     return items
 
 
+def build_team_select_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
+    def reload_page():
+        page.reload()
+        return "Page reloaded."
+    return [
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
+        MenuItem("Reload Page", "P", reload_page),
+        MenuItem("Quit",        "Q", lambda: "QUIT"),
+    ]
+
+
+def build_stage_select_items(state: dict, page, refresh_fn: Callable, selected_starter: int) -> list[MenuItem]:
+    stages = state.get("stages", [])
+    shortcuts = "123456789"
+
+    def click_stage(idx):
+        def _action():
+            page.evaluate("""(i) => {
+                const btns = document.querySelectorAll('#stage-select-list button')
+                if (btns[i]) btns[i].click()
+            }""", idx)
+            return f"Selected {stages[idx]['name']}"
+        return _action
+
+    def go_back():
+        page.evaluate("""() => {
+            const btn = Array.from(document.querySelectorAll('button'))
+                .find(b => b.textContent.includes('Back') && b.getBoundingClientRect().width > 0)
+            if (btn) btn.click()
+        }""")
+        return "Going back..."
+
+    def reload_page():
+        page.reload()
+        return "Page reloaded."
+
+    items = []
+    for i, s in enumerate(stages):
+        label = f"{s['name']}  {s['gen']}"
+        items.append(MenuItem(label, shortcuts[i] if i < len(shortcuts) else "?",
+                              click_stage(i), enabled=s.get("enabled", True)))
+
+    items += [
+        MenuItem("← Back",      "B", go_back),
+        MenuItem("Raw JSON",    "J", lambda: "SHOW_JSON"),
+        MenuItem("Reload Page", "P", reload_page),
+        MenuItem("Quit",        "Q", lambda: "QUIT"),
+    ]
+    return items
+
+
 MENU_BUILDERS = {
     ScreenType.MAIN_MENU:        build_main_menu_items,
     ScreenType.STARTER_SELECT:   build_starter_select_items,
@@ -1030,6 +1033,8 @@ MENU_BUILDERS = {
     ScreenType.ITEM_EQUIP:       build_item_equip_items,
     ScreenType.CHAMPION:         build_champion_items,
     ScreenType.TEAM_FULL:        build_team_full_items,
+    ScreenType.STAGE_SELECT:     build_stage_select_items,
+    ScreenType.TEAM_SELECT:      build_team_select_items,
 }
 
 
@@ -1262,6 +1267,26 @@ class CatchPokemonPanel(Widget):
         height: 1fr;
     }
     #catch-cards { layout: horizontal; height: 1fr; }
+    #catch-rerolls {
+        layout: horizontal;
+        height: 3;
+        padding: 0 1;
+    }
+    .reroll-cell {
+        width: 1fr;
+        height: 3;
+        margin: 0 1;
+        border: round #2a2a4a;
+        background: #0f0f22;
+        content-align: center middle;
+        color: #555577;
+        text-align: center;
+    }
+    .reroll-cell.active {
+        border: round #f5c518;
+        color: #f5c518;
+        background: #18183a;
+    }
     #catch-strip {
         height: 5;
         layout: horizontal;
@@ -1281,17 +1306,20 @@ class CatchPokemonPanel(Widget):
 
     def compose(self) -> ComposeResult:
         yield Horizontal(id="catch-cards")
+        yield Horizontal(id="catch-rerolls")
         yield Horizontal(id="catch-strip")
 
     def rebuild(self, choices: list, strip_items: list[MenuItem], selected: int,
-                recommended_idx: int | None = None) -> None:
+                recommended_idx: int | None = None,
+                reroll_items: list | None = None) -> None:
         shortcuts = "123456789"
+        n = len(choices)
 
+        # Cards row
         cards_row = self.query_one("#catch-cards")
         existing  = list(cards_row.query(PokemonCard))
-
         same_data = (
-            len(existing) == len(choices)
+            len(existing) == n
             and all(e._choice.get("name") == c.get("name") for e, c in zip(existing, choices))
         )
         if same_data:
@@ -1306,18 +1334,33 @@ class CatchPokemonPanel(Widget):
                 for i, c in enumerate(choices)
             ])
 
+        # Reroll row — one cell per card, highlighted when that reroll slot is selected
+        reroll_row = self.query_one("#catch-rerolls")
+        existing_cells = list(reroll_row.query(".reroll-cell"))
+        reroll_selected = (selected - n) if reroll_items and n <= selected < n * 2 else None
+        if len(existing_cells) == n:
+            for i, cell in enumerate(existing_cells):
+                cell.set_class(i == reroll_selected, "active")
+        else:
+            reroll_row.query(".reroll-cell").remove()
+            cells = []
+            for i in range(n):
+                cell = Static("⟳  Reroll", classes="reroll-cell")
+                cells.append(cell)
+            reroll_row.mount(*cells)
+
         # Strip: compact action buttons (Skip, JSON, Quit …)
         strip_row = self.query_one("#catch-strip")
         strip_existing = list(strip_row.query(ActionItem))
-        offset = len(choices)
+        strip_offset = n * 2
 
         if len(strip_existing) == len(strip_items):
             for i, item in enumerate(strip_existing):
-                item.refresh_state(strip_items[i], (offset + i) == selected)
+                item.refresh_state(strip_items[i], (strip_offset + i) == selected)
         else:
             strip_row.query(ActionItem).remove()
             strip_row.mount(*[
-                ActionItem(item, (offset + i) == selected)
+                ActionItem(item, (strip_offset + i) == selected)
                 for i, item in enumerate(strip_items)
             ])
 
@@ -2709,6 +2752,145 @@ class ActionMenu(Widget):
 # Textual screens
 # ---------------------------------------------------------------------------
 
+_UTILS_TOGGLES = [
+    # (shortcut, label, attr_name, action_type)
+    # action_type: "path" = invalidate path cache, "follow" = also reset accessible, "rebuild" = just rebuild
+    ("U", "Level Path",        "level_path_on",         "path"),
+    ("F", "Follow Path",       "follow_path_on",        "follow"),
+    ("A", "Autoswap",          "autoswap_on",           "rebuild"),
+    ("C", "Prio. 1st Catch",   "prioritize_catch_on",   "path"),
+    ("H", "Prio. Heal",        "prioritize_heal_on",    "path"),
+    ("R", "Poke. Recommend",   "poke_recommend_on",     "rebuild"),
+    ("I", "Item Recommend",    "item_recommend_on",     "rebuild"),
+    ("T", "Autobattle",        "autobattle_on",         "rebuild"),
+    ("M", "Prio. Mystery",     "prioritize_mystery_on", "path"),
+    ("N", "Prio. Catches",     "prioritize_catches_on", "path"),
+    ("S", "Prio. Shiny",       "prioritize_shiny_on",   "rebuild"),
+    ("Z", "Auto Reroll",      "auto_reroll_on",        "rebuild"),
+]
+
+
+class UtilsScreen(ModalScreen):
+    """Centered popup overlay for toggling automation options."""
+
+    DEFAULT_CSS = """
+    UtilsScreen {
+        align: center middle;
+    }
+    #utils-panel {
+        width: 46;
+        height: auto;
+        border: double #4488ff;
+        background: #0d0d1a;
+        padding: 1 2;
+    }
+    #utils-title {
+        height: 1;
+        text-align: center;
+        color: #4488ff;
+        text-style: bold;
+        margin-bottom: 1;
+        content-align: center middle;
+    }
+    #utils-body {
+        height: auto;
+    }
+    #utils-hint {
+        height: 1;
+        color: #555577;
+        text-align: center;
+        margin-top: 1;
+        content-align: center middle;
+    }
+    """
+
+    def __init__(self, app_ref) -> None:
+        super().__init__()
+        self._app_ref = app_ref
+        self._selected = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="utils-panel"):
+            yield Label("⚙  UTILS", id="utils-title")
+            yield Static("", id="utils-body")
+            yield Label("↑↓ navigate  ·  Enter/letter toggle  ·  Esc close", id="utils-hint")
+
+    def on_mount(self) -> None:
+        self._app_ref.utils_mode[0] = True
+        self._refresh_body()
+
+    def on_unmount(self) -> None:
+        self._app_ref.utils_mode[0] = False
+        self._app_ref._follow_last_accessible = frozenset()
+        self._app_ref._force_parse = True
+
+    def _refresh_body(self) -> None:
+        a = self._app_ref
+        t = Text()
+        for i, (key, label, attr, _) in enumerate(_UTILS_TOGGLES):
+            is_sel = i == self._selected
+            if attr:
+                val = getattr(a, attr)[0]
+                state_str = "[bold #00e676]ON [/]" if val else "[dim]OFF[/]"
+            else:
+                state_str = "   "
+            row_style = "bold #ffffff on #1a1a3a" if is_sel else ""
+            cursor = "❯ " if is_sel else "  "
+            line = Text()
+            line.append(f"{cursor}", style=row_style)
+            line.append(f"{key}", style=f"bold #f5c518{' on #1a1a3a' if is_sel else ''}")
+            line.append(f"  {label:<18}", style=row_style)
+            line.append(f"  ")
+            line.append_text(Text.from_markup(state_str))
+            line.append("\n")
+            t.append_text(line)
+        t.append_text(Text.from_markup("\n  [dim]G[/]  [dim]Debug[/]"))
+        self.query_one("#utils-body", Static).update(t)
+
+    def _toggle_selected(self, idx: int) -> None:
+        a = self._app_ref
+        key, label, attr, action = _UTILS_TOGGLES[idx]
+        if attr is None:
+            return
+        ref = getattr(a, attr)
+        ref[0] = not ref[0]
+        if action in ("path", "follow"):
+            a._last_level_path_key = None
+            a._force_parse = True
+        if action == "follow":
+            a._follow_last_accessible = frozenset()
+        a._force_parse = True
+        a._rebuild()
+        self._refresh_body()
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key == "escape" or key == "x":
+            self.app.pop_screen()
+            return
+        if key == "up":
+            self._selected = (self._selected - 1) % len(_UTILS_TOGGLES)
+            self._refresh_body()
+            return
+        if key == "down":
+            self._selected = (self._selected + 1) % len(_UTILS_TOGGLES)
+            self._refresh_body()
+            return
+        if key == "enter":
+            self._toggle_selected(self._selected)
+            return
+        if key == "g":
+            self.app.pop_screen()
+            self._app_ref._execute_item_by_result("SHOW_LEVEL_PATH_DEBUG")
+            return
+        # Letter shortcut — find matching toggle
+        for i, (k, _, attr, _) in enumerate(_UTILS_TOGGLES):
+            if key == k.lower() and attr is not None:
+                self._selected = i
+                self._toggle_selected(i)
+                return
+
+
 class JsonScreen(Screen):
     """Scrollable JSON viewer."""
 
@@ -2771,6 +2953,182 @@ class JsonScreen(Screen):
     def on_key(self, event) -> None:
         if event.key not in ("up", "down", "pageup", "pagedown", "escape"):
             self.app.pop_screen()
+
+
+class TeamSelectScreen(ModalScreen):
+    """Full-screen Battle Tower PC box — search + shiny filter + scrollable grid."""
+
+    BINDINGS = [
+        Binding("escape", "cancel",     "Cancel",  priority=True),
+        Binding("up",     "row_up",     "",        show=False, priority=True),
+        Binding("down",   "row_down",   "",        show=False, priority=True),
+        Binding("enter",  "select_row", "Select",  priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    TeamSelectScreen {
+        background: #0d0d1a 85%;
+        align: center middle;
+    }
+    #ts-outer {
+        width: 92%;
+        height: 92%;
+        layout: vertical;
+        border: double #4488ff;
+        background: #0d0d1a;
+    }
+    #ts-header {
+        height: 1;
+        background: #12121f;
+        color: #4488ff;
+        text-style: bold;
+        content-align: center middle;
+        border-bottom: solid #2a2a4a;
+    }
+    #ts-toolbar {
+        height: 3;
+        background: #0f0f1f;
+        border-bottom: solid #1e1e3a;
+        padding: 0 2;
+        align: left middle;
+    }
+    #ts-search {
+        width: 28;
+        background: #0d0d1a;
+        color: #00d7d7;
+        border: round #2a2a4a;
+    }
+    #ts-count {
+        color: #555577;
+        margin-left: 2;
+        width: auto;
+        content-align: left middle;
+    }
+    #ts-hint {
+        color: #2a2a4a;
+        width: 1fr;
+        text-align: right;
+        content-align: right middle;
+        padding-right: 1;
+    }
+    #ts-table {
+        height: 1fr;
+        background: #12121f;
+    }
+    TeamSelectScreen DataTable > .datatable--header {
+        background: #12121f;
+        color: #f5c518;
+        text-style: bold;
+    }
+    TeamSelectScreen DataTable > .datatable--cursor {
+        background: #1e1e35;
+        color: #e8e8ff;
+    }
+    TeamSelectScreen DataTable {
+        background: #12121f;
+        color: #e8e8ff;
+    }
+    """
+
+    def __init__(self, app_ref) -> None:
+        super().__init__()
+        self._app_ref = app_ref
+        self._rows: list[dict] = []   # filtered rows, index matches DataTable row
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ts-outer"):
+            yield Label("", id="ts-header")
+            with Horizontal(id="ts-toolbar"):
+                yield Input(placeholder="search by name…", id="ts-search")
+                yield Label("", id="ts-count")
+                yield Label("↑↓=nav  Enter=pick  Esc=cancel", id="ts-hint")
+            yield DataTable(id="ts-table")
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("", "Name", "Lv", "Types", "Buff")
+        table.cursor_type = "row"
+        table.zebra_stripes = True
+        self.query_one(Input).focus()
+        self._refresh()
+
+    def on_input_changed(self, _: Input.Changed) -> None:
+        self._refresh()
+
+    def _filtered(self) -> list[dict]:
+        pokemon = self._app_ref.state.get("pokemon", [])
+        q = ""
+        try:
+            q = self.query_one(Input).value.lower()
+        except Exception:
+            pass
+        result = pokemon
+        if q:
+            result = [p for p in result if p["name"].lower().startswith(q)]
+        return sorted(result, key=lambda p: (-int(p.get("is_shiny") or 0), -p.get("buff", 0)))
+
+    def _refresh(self) -> None:
+        title = self._app_ref.state.get("title", "HALL OF FAME PC")
+        total = len(self._app_ref.state.get("pokemon", []))
+        try:
+            self.query_one("#ts-header", Label).update(
+                f"⚔  {title}  ·  {total} Pokémon"
+            )
+        except Exception:
+            pass
+        self._rows = self._filtered()
+        table = self.query_one(DataTable)
+        table.clear()
+        for p in self._rows:
+            shiny_mark = Text("★", style="bold #ffdd22") if p.get("is_shiny") else Text(" ", style="#555577")
+            name  = Text(p["name"], style="bold #e8e8ff" if p.get("is_shiny") else "#e8e8ff")
+            level = Text(p.get("level", "?"), style="#555577")
+            types = Text("/".join(p.get("types", [])) or "—", style="#888899")
+            buff  = Text("★" * min(p.get("buff", 0), 12), style="#f5c518")
+            table.add_row(shiny_mark, name, level, types, buff)
+        try:
+            self.query_one("#ts-count", Label).update(
+                f"[#555577]{len(self._rows)}/{total}[/]"
+            )
+        except Exception:
+            pass
+
+    def action_row_up(self) -> None:
+        table = self.query_one(DataTable)
+        if table.row_count and table.cursor_row > 0:
+            table.move_cursor(row=table.cursor_row - 1)
+
+    def action_row_down(self) -> None:
+        table = self.query_one(DataTable)
+        if table.row_count and table.cursor_row < table.row_count - 1:
+            table.move_cursor(row=table.cursor_row + 1)
+
+    def action_select_row(self) -> None:
+        table = self.query_one(DataTable)
+        if not self._rows or table.row_count == 0:
+            return
+        row_idx = table.cursor_row
+        if row_idx < len(self._rows):
+            slot_idx = self._rows[row_idx]["index"]
+            page = self._app_ref.page
+            self._app_ref.run_in_browser(
+                lambda i=slot_idx: page.evaluate(
+                    "(i) => document.querySelectorAll('.pc-slot')[i]?.click()", i
+                )
+            )
+            self.app.pop_screen()
+
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
+    def on_key(self, event) -> None:
+        # Backspace for search input
+        if event.key == "backspace":
+            try:
+                inp = self.query_one(Input)
+                inp.value = inp.value[:-1]
+            except Exception:
+                pass
 
 
 class PokedexScreen(Screen):
@@ -3155,6 +3513,7 @@ class PokelikeApp(App):
         self.poke_recommend_on    = [True]
         self.item_recommend_on    = [True]
         self.prioritize_shiny_on  = [True]
+        self.auto_reroll_on       = [False]
         self._item_points_cache: dict[str, int] = {}
         self._team_attack_types: set = set()
         self._upcoming_boss_types: list = []
@@ -3327,6 +3686,17 @@ class PokelikeApp(App):
                            for c in choices]
                 if scores:
                     self.selected = scores.index(max(scores))
+            if new_screen == ScreenType.CATCH_POKEMON and self.auto_reroll_on[0]:
+                page = self.page
+                for i, c in enumerate(new_state.get("choices", [])):
+                    if not c.get("is_shiny"):
+                        def do_reroll(idx=i):
+                            page.evaluate("""(i) => {
+                                const btn = document.querySelectorAll('.screen.active .poke-choice-wrap')[i]
+                                    ?.querySelector('.reroll-btn')
+                                if (btn) btn.click()
+                            }""", idx)
+                        self._task_queue.put((do_reroll, [None], threading.Event()))
             if new_screen == ScreenType.ITEM_SELECT:
                 choices = new_state.get("choices", [])
                 item_db.upsert_items(choices)
@@ -3462,6 +3832,11 @@ class PokelikeApp(App):
                 if (o) o.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}))
             }"""
             self._task_queue.put((lambda: page.evaluate(evo_js), [None], threading.Event()))
+        if new == ScreenType.TEAM_SELECT:
+            self.push_screen(TeamSelectScreen(self))
+        elif prev == ScreenType.TEAM_SELECT:
+            if len(self.screen_stack) > 1 and isinstance(self.screen_stack[-1], TeamSelectScreen):
+                self.pop_screen()
 
     def _rebuild(self) -> None:
         if not self._ui_ready or self.page is None:
@@ -3481,11 +3856,10 @@ class PokelikeApp(App):
             pass
 
         is_map         = self.game_screen == ScreenType.MAP
-        _utils_open    = self.utils_mode[0] and self.game_screen in self._UTILS_SCREENS
-        is_catch       = self.game_screen == ScreenType.CATCH_POKEMON  and not _utils_open
+        is_catch       = self.game_screen == ScreenType.CATCH_POKEMON
         is_battle      = self.game_screen == ScreenType.BATTLE
-        is_item_select = self.game_screen == ScreenType.ITEM_SELECT    and not _utils_open
-        is_team_full   = self.game_screen == ScreenType.TEAM_FULL      and not _utils_open
+        is_item_select = self.game_screen == ScreenType.ITEM_SELECT
+        is_team_full   = self.game_screen == ScreenType.TEAM_FULL
         is_main_menu   = self.game_screen == ScreenType.MAIN_MENU
         is_custom      = is_map or is_catch or is_battle or is_item_select or is_team_full or is_main_menu
         try:
@@ -3507,8 +3881,7 @@ class PokelikeApp(App):
             n_nodes       = len(accessible)
             is_swap_pick  = swap_val in ("swap", "item_pick") or isinstance(swap_val, int)
             is_bag_active = self.bag_mode[0]
-            is_utils      = self.utils_mode[0]
-            is_special    = is_swap_pick or is_bag_active or is_utils
+            is_special    = is_swap_pick or is_bag_active
 
             # Team grid
             team_key = tuple(
@@ -3602,12 +3975,20 @@ class PokelikeApp(App):
                 ]
                 if scores:
                     rec_idx = scores.index(max(scores))
+                    # Move cursor to new recommendation only when choices changed (e.g. after reroll)
+                    choices_key = tuple(c.get("name") for c in choices)
+                    if choices_key != getattr(self, "_last_catch_choices_key", None):
+                        self._last_catch_choices_key = choices_key
+                        if self.selected < len(choices):
+                            self.selected = rec_idx
             items_key = (tuple(f"{i.label}:{i.enabled}" for i in self._items), self.selected, rec_idx)
             if items_key != self._last_items_key:
                 self._last_items_key = items_key
-                strip_items = self._items[len(choices):]
+                n = len(choices)
+                reroll_items = self._items[n:n * 2]
+                strip_items  = self._items[n * 2:]
                 try:
-                    self.query_one(CatchPokemonPanel).rebuild(choices, strip_items, self.selected, rec_idx)
+                    self.query_one(CatchPokemonPanel).rebuild(choices, strip_items, self.selected, rec_idx, reroll_items)
                 except Exception:
                     pass
             return
@@ -3776,7 +4157,7 @@ class PokelikeApp(App):
                 if is_swap_pick:
                     util_items   = self._items[len(team):]  # only Cancel/Quit
                     strip_offset = len(team)
-                elif is_bag_active or is_utils:
+                elif is_bag_active:
                     util_items   = self._items              # all items in strip
                     strip_offset = 0
                 else:
@@ -3832,73 +4213,13 @@ class PokelikeApp(App):
         self.swap_source[0] = None
         self.bag_mode[0]    = False
 
-        # Utils sub-menu — available on all _UTILS_SCREENS
-        if self.utils_mode[0] and self.game_screen in self._UTILS_SCREENS:
-            def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
-            def _toggle_lp():
-                self.level_path_on[0] = not self.level_path_on[0]
-                return "Level Path toggled"
-            def _toggle_fp():
-                self.follow_path_on[0] = not self.follow_path_on[0]
-                return "FOLLOW_PATH_TOGGLED"
-            def _toggle_as():
-                self.autoswap_on[0] = not self.autoswap_on[0]
-                return "Level Path toggled"
-            def _toggle_pc():
-                self.prioritize_catch_on[0] = not self.prioritize_catch_on[0]
-                return "Level Path toggled"
-            def _toggle_ph():
-                self.prioritize_heal_on[0] = not self.prioritize_heal_on[0]
-                return "Level Path toggled"
-            def _toggle_pr():
-                self.poke_recommend_on[0] = not self.poke_recommend_on[0]
-                return "Poke. Recommend toggled"
-            def _toggle_ir():
-                self.item_recommend_on[0] = not self.item_recommend_on[0]
-                return "Item Recommend toggled"
-            def _toggle_ab():
-                self.autobattle_on[0] = not self.autobattle_on[0]
-                return "AUTOBATTLE_TOGGLED"
-            def _toggle_pm():
-                self.prioritize_mystery_on[0] = not self.prioritize_mystery_on[0]
-                return "Level Path toggled"
-            def _toggle_ps():
-                self.prioritize_shiny_on[0] = not self.prioritize_shiny_on[0]
-                return "Poke. Recommend toggled"
-            def _toggle_pca():
-                self.prioritize_catches_on[0] = not self.prioritize_catches_on[0]
-                return "Level Path toggled"
-            def _cancel_utils():
-                self.utils_mode[0] = False
-                return "UTILS_CANCELLED"
-            return [
-                MenuItem(_lbl("Level Path",        self.level_path_on[0]),         "U", _toggle_lp),
-                MenuItem(_lbl("Follow Path",        self.follow_path_on[0]),        "F", _toggle_fp),
-                MenuItem(_lbl("Autoswap",           self.autoswap_on[0]),           "A", _toggle_as),
-                MenuItem(_lbl("Prio. First Catch",  self.prioritize_catch_on[0]),   "C", _toggle_pc),
-                MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),    "H", _toggle_ph),
-                MenuItem(_lbl("Poke. Recommend",    self.poke_recommend_on[0]),     "R", _toggle_pr),
-                MenuItem(_lbl("Item Recommend",     self.item_recommend_on[0]),     "I", _toggle_ir),
-                MenuItem(_lbl("Autobattle",         self.autobattle_on[0]),         "T", _toggle_ab),
-                MenuItem(_lbl("Prio. Mystery",      self.prioritize_mystery_on[0]), "M", _toggle_pm),
-                MenuItem(_lbl("Prio. Shiny",        self.prioritize_shiny_on[0]),    "S", _toggle_ps),
-                MenuItem(_lbl("Prio. Catches",      self.prioritize_catches_on[0]),  "N", _toggle_pca),
-                MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
-                MenuItem("Cancel", "X", _cancel_utils),
-                MenuItem("Quit",   "Q", lambda: "QUIT"),
-            ]
-
-        self.utils_mode[0] = False
         builder = MENU_BUILDERS.get(self.game_screen)
         items   = builder(self.state, self.page, noop_refresh, self.selected_starter) if builder \
                   else _fallback_items(noop_refresh, self.page)
 
-        # Append Utils entry to supported screens (before the last Quit item)
+        # Inject Utils entry on supported screens (before Quit)
         if self.game_screen in self._UTILS_SCREENS:
-            def _enter_utils():
-                self.utils_mode[0] = True
-                return ""
-            items.insert(len(items) - 1, MenuItem("Utils", "U", _enter_utils))
+            items.insert(len(items) - 1, MenuItem("Utils", "U", lambda: "SHOW_UTILS"))
 
         return items
 
@@ -3955,7 +4276,9 @@ class PokelikeApp(App):
             self._map_nav(key)
             return
         if self.game_screen in (ScreenType.ITEM_SELECT, ScreenType.CATCH_POKEMON) and key in ("up", "down", "left", "right"):
-            self._cards_strip_nav(key, len(self.state.get("choices", [])))
+            n = len(self.state.get("choices", []))
+            n_rerolls = n if self.game_screen == ScreenType.CATCH_POKEMON else 0
+            self._cards_strip_nav(key, n, n_rerolls)
             return
         if key == "up":
             self.selected = (self.selected - 1) % len(items)
@@ -4086,21 +4409,48 @@ class PokelikeApp(App):
         self.selected = max(0, min(self.selected, len(items) - 1))
         self._rebuild()
 
-    def _cards_strip_nav(self, direction: str, n_cards: int) -> None:
-        items    = self._items
-        n_strip  = max(1, len(items) - n_cards)
-        in_strip = self.selected >= n_cards
-        strip_idx = self.selected - n_cards if in_strip else 0
-        card_idx  = self.selected if not in_strip else 0
+    def _cards_strip_nav(self, direction: str, n_cards: int, n_rerolls: int = 0) -> None:
+        items       = self._items
+        reroll_start = n_cards
+        strip_start  = n_cards + n_rerolls
+        n_strip      = max(1, len(items) - strip_start)
+        sel          = self.selected
+
+        in_cards   = sel < n_cards
+        in_rerolls = n_rerolls > 0 and reroll_start <= sel < strip_start
+        in_strip   = sel >= strip_start
+
+        card_idx   = sel if in_cards else max(0, sel - (0 if in_cards else (n_rerolls if in_rerolls else n_cards + n_rerolls)))
+        reroll_idx = sel - reroll_start if in_rerolls else 0
+        strip_idx  = sel - strip_start if in_strip else 0
 
         if direction == "right":
-            self.selected = (n_cards + (strip_idx + 1) % n_strip) if in_strip else (card_idx + 1) % max(1, n_cards)
+            if in_cards:
+                self.selected = (sel + 1) % max(1, n_cards)
+            elif in_rerolls:
+                self.selected = reroll_start + (reroll_idx + 1) % max(1, n_rerolls)
+            else:
+                self.selected = strip_start + (strip_idx + 1) % n_strip
         elif direction == "left":
-            self.selected = (n_cards + (strip_idx - 1) % n_strip) if in_strip else (card_idx - 1) % max(1, n_cards)
+            if in_cards:
+                self.selected = (sel - 1) % max(1, n_cards)
+            elif in_rerolls:
+                self.selected = reroll_start + (reroll_idx - 1) % max(1, n_rerolls)
+            else:
+                self.selected = strip_start + (strip_idx - 1) % n_strip
         elif direction == "down":
-            self.selected = 0 if in_strip else n_cards
+            if in_cards:
+                self.selected = (reroll_start + min(sel, n_rerolls - 1)) if n_rerolls else strip_start
+            elif in_rerolls:
+                self.selected = strip_start
+            # already in strip — no-op
         elif direction == "up":
-            self.selected = min(strip_idx, max(0, n_cards - 1)) if in_strip else n_cards + n_strip - 1
+            if in_strip:
+                self.selected = (reroll_start + min(strip_idx, n_rerolls - 1)) if n_rerolls else min(strip_idx, n_cards - 1)
+            elif in_rerolls:
+                self.selected = min(reroll_idx, n_cards - 1)
+            else:
+                self.selected = strip_start + n_strip - 1
 
         self.selected = max(0, min(self.selected, len(items) - 1))
         self._rebuild()
@@ -4209,12 +4559,130 @@ class PokelikeApp(App):
         self.selected = max(0, min(self.selected, len(items) - 1))
         self._rebuild()
 
+    def _execute_item_by_result(self, result: str) -> None:
+        """Dispatch a result string as if it came from _execute_item (called from main thread)."""
+        if result == "SHOW_UTILS":
+            self.push_screen(UtilsScreen(self))
+        elif result == "SHOW_LEVEL_PATH_DEBUG":
+            self._execute_item_debug()
+
+    def _execute_item_debug(self) -> None:
+        """Build and show the full debug screen (must be called from main thread)."""
+        nodes = self.state.get("nodes", [])
+        team  = self.state.get("team", [])
+        path  = self.best_level_path[0]
+        lines: list[str] = []
+
+        # ── Level path ───────────────────────────────────────────
+        extra_fn = _make_extra_score(
+            self.prioritize_catch_on[0], self.prioritize_heal_on[0],
+            self.prioritize_mystery_on[0], self.prioritize_catches_on[0],
+        )
+        prio_flags = []
+        if self.prioritize_catch_on[0]:   prio_flags.append("1st Catch")
+        if self.prioritize_heal_on[0]:    prio_flags.append("Heal")
+        if self.prioritize_mystery_on[0]: prio_flags.append("Mystery")
+        if self.prioritize_catches_on[0]: prio_flags.append("Catches")
+        prio_str = f"  [{', '.join(prio_flags)}]" if prio_flags else ""
+        if not path:
+            lines.append("No path computed. Enable Level Path first (U).")
+        else:
+            total = sum(
+                _node_score(nodes[i].get("type", "")) + (extra_fn(i, nodes[i]) if extra_fn else 0)
+                for i in path if i < len(nodes)
+            )
+            lines.append(f"Best Level Path  (total score: {total:.1f}){prio_str}\n")
+            for i in path:
+                if i >= len(nodes): continue
+                ntype = nodes[i].get("type", "?")
+                base  = _node_score(ntype)
+                bonus = extra_fn(i, nodes[i]) if extra_fn else 0.0
+                bonus_str = f"  +{bonus:.0f} prio" if bonus else ""
+                lines.append(f"  Node {i:2d}  {ntype:<20}  +{base:.1f}{bonus_str}")
+
+        # ── Autoswap order ───────────────────────────────────────
+        if team:
+            poke_type = ""
+            new_acc   = frozenset(n["index"] for n in nodes if n["accessible"])
+            for ni in path:
+                if ni < len(nodes) and ni in new_acc:
+                    poke_type = nodes[ni].get("poke_type", "")
+                    break
+            lines.append(f"\nAutoswap order  (vs {poke_type or '?'})\n")
+            order = _compute_autoswap_order(team, poke_type)
+            for rank, slot in enumerate(order):
+                if slot >= len(team): continue
+                p    = team[slot]
+                name = p.get("name", "?")
+                types = "/".join(p.get("types", []))
+                lv   = p.get("level") or "?"
+                atk  = _autoswap_score(p.get("types", []), poke_type)
+                dfn  = _defense_score(p.get("types", []), poke_type)
+                lines.append(f"  {rank+1}. {name:<12} Lv{lv:<3}  [{types}]  atk×{atk:.1f}  def×{dfn:.1f}")
+
+        # ── Catch recommendation ─────────────────────────────────
+        if self.game_screen == ScreenType.CATCH_POKEMON and self._upcoming_boss_types:
+            choices    = self.state.get("choices", [])
+            boss_types = self._upcoming_boss_types
+            weights    = [3, 2, 1]
+            boss_labels = "  ".join(f"{bt} ×{weights[i]}" for i, bt in enumerate(boss_types[:3]))
+            lines.append(f"\nCatch Recommendation  (boss types: {boss_labels})\n")
+            coverage = self._team_type_coverage
+            scored = []
+            for c in choices:
+                ptypes      = c.get("types", [])
+                shiny_bonus = 50 if self.prioritize_shiny_on[0] and c.get("is_shiny") else 0
+                total       = _catch_recommend_score(ptypes, boss_types, coverage) + shiny_bonus
+                scored.append((c, ptypes, total, shiny_bonus))
+            scored.sort(key=lambda x: -x[2])
+            for rank, (c, ptypes, total, shiny_bonus) in enumerate(scored):
+                star      = "★ " if rank == 0 else "  "
+                tstr      = "/".join(ptypes)
+                shiny_str = "  +50 shiny" if shiny_bonus else ""
+                lines.append(f"  {star}{c.get('name','?'):<14} [{tstr:<16}]  total = {total:.2f}{shiny_str}")
+                for i, bt in enumerate(boss_types[:3]):
+                    if not bt: continue
+                    dmg = _defense_score(ptypes, bt)
+                    res = (1.0 / dmg) if dmg else 4.0
+                    lines.append(f"      {bt:<14} (×{weights[i]}):  dmg={dmg:.2f}  res={res:.2f}  → {res*weights[i]:.2f}")
+                overlapping = [t for t in ptypes if t.capitalize() in coverage]
+                if overlapping:
+                    lines.append(f"      team overlap: {'/'.join(overlapping)}  → ×0.5 per type")
+
+        # ── Item recommendation ──────────────────────────────────
+        if self.game_screen == ScreenType.ITEM_SELECT:
+            choices      = self.state.get("choices", [])
+            pts_map      = self._item_points_cache
+            attack_types = self._team_attack_types
+            lines.append(f"\nItem Recommendation  (attack types: {', '.join(sorted(attack_types)) or 'none'})\n")
+            scored = []
+            for c in choices:
+                name  = c.get("name", "?")
+                base  = float(pts_map.get(name, 0))
+                bonus = 0.0
+                m = _ITEM_TYPE_BOOST_RE.search(c.get("description", ""))
+                if m:
+                    item_type = m.group(1).capitalize()
+                    bonus = 500.0 if item_type in attack_types else -100.0
+                scored.append((c, base, bonus, base + bonus))
+            scored.sort(key=lambda x: -x[3])
+            for rank, (c, base, bonus, total) in enumerate(scored):
+                star      = "★ " if rank == 0 else "  "
+                bonus_str = f"+{bonus:.0f}" if bonus >= 0 else f"{bonus:.0f}"
+                m2 = _ITEM_TYPE_BOOST_RE.search(c.get("description", ""))
+                type_tag = f"  [{m2.group(1).capitalize()} boost]" if m2 else ""
+                lines.append(f"  {star}{c.get('name','?'):<20}  base={base:.0f}  bonus={bonus_str:<5}  total={total:.0f}{type_tag}")
+
+        self.push_screen(JsonScreen("\n".join(lines)))
+
     @work(thread=True)
     def _execute_item(self, index: int) -> None:
         items  = self._items
         result = self.run_in_browser(lambda: _execute(items, index))
         if result == "QUIT":
             self.call_from_thread(self.exit)
+        elif result == "SHOW_UTILS":
+            self.call_from_thread(self.push_screen, UtilsScreen(self))
         elif result == "SHOW_POKEDEX":
             self.call_from_thread(self.push_screen, PokedexScreen(self))
         elif result == "SHOW_JSON":
@@ -4231,137 +4699,8 @@ class PokelikeApp(App):
             self._follow_last_accessible = frozenset()
             self._force_parse = True
             self.call_from_thread(self._rebuild)
-        elif result == "UTILS_CANCELLED":
-            self._follow_last_accessible = frozenset()
-            self._force_parse = True
-            self.call_from_thread(self._rebuild)
         elif result == "SHOW_LEVEL_PATH_DEBUG":
-            nodes = self.state.get("nodes", [])
-            team  = self.state.get("team", [])
-            path  = self.best_level_path[0]
-            lines: list[str] = []
-
-            # ── Level path ───────────────────────────────────────────
-            if not path:
-                lines.append("No path computed. Enable Level Path first (U → U).")
-            else:
-                extra_fn = _make_extra_score(
-                    self.prioritize_catch_on[0],
-                    self.prioritize_heal_on[0],
-                    self.prioritize_mystery_on[0],
-                    self.prioritize_catches_on[0],
-                )
-                prio_flags = []
-                if self.prioritize_catch_on[0]:   prio_flags.append("1st Catch")
-                if self.prioritize_heal_on[0]:    prio_flags.append("Heal")
-                if self.prioritize_mystery_on[0]: prio_flags.append("Mystery")
-                if self.prioritize_catches_on[0]: prio_flags.append("Catches")
-                prio_str = f"  [{', '.join(prio_flags)}]" if prio_flags else ""
-                total = sum(
-                    _node_score(nodes[i].get("type", "")) + (extra_fn(i, nodes[i]) if extra_fn else 0)
-                    for i in path if i < len(nodes)
-                )
-                lines.append(f"Best Level Path  (total score: {total:.1f}){prio_str}\n")
-                for i in path:
-                    if i >= len(nodes): continue
-                    ntype = nodes[i].get("type", "?")
-                    base  = _node_score(ntype)
-                    bonus = extra_fn(i, nodes[i]) if extra_fn else 0.0
-                    bonus_str = f"  +{bonus:.0f} prio" if bonus else ""
-                    lines.append(f"  Node {i:2d}  {ntype:<20}  +{base:.1f}{bonus_str}")
-
-            # ── Autoswap order ───────────────────────────────────────
-            if team:
-                # Find target node poke_type from path
-                poke_type = ""
-                new_acc   = frozenset(n["index"] for n in nodes if n["accessible"])
-                for ni in path:
-                    if ni < len(nodes) and ni in new_acc:
-                        poke_type = nodes[ni].get("poke_type", "")
-                        break
-
-                lines.append(f"\nAutoswap order  (vs {poke_type or '?'})\n")
-                order = _compute_autoswap_order(team, poke_type)
-                for rank, slot in enumerate(order):
-                    if slot >= len(team):
-                        continue
-                    p      = team[slot]
-                    name   = p.get("name", "?")
-                    types  = "/".join(p.get("types", []))
-                    lv     = p.get("level") or "?"
-                    atk    = _autoswap_score(p.get("types", []), poke_type)
-                    dfn    = _defense_score(p.get("types", []), poke_type)
-                    lines.append(
-                        f"  {rank+1}. {name:<12} Lv{lv:<3}  [{types}]"
-                        f"  atk×{atk:.1f}  def×{dfn:.1f}"
-                    )
-
-            # ── Catch recommendation ─────────────────────────────────
-            if self.game_screen == ScreenType.CATCH_POKEMON and self._upcoming_boss_types:
-                choices = self.state.get("choices", [])
-                boss_types = self._upcoming_boss_types
-                weights = [3, 2, 1]
-                boss_labels = "  ".join(
-                    f"{bt} ×{weights[i]}" for i, bt in enumerate(boss_types[:3])
-                )
-                lines.append(f"\nCatch Recommendation  (boss types: {boss_labels})\n")
-                coverage = self._team_type_coverage
-                scored = []
-                for c in choices:
-                    ptypes     = c.get("types", [])
-                    shiny_bonus = 50 if self.prioritize_shiny_on[0] and c.get("is_shiny") else 0
-                    total      = _catch_recommend_score(ptypes, boss_types, coverage) + shiny_bonus
-                    scored.append((c, ptypes, total, shiny_bonus))
-                scored.sort(key=lambda x: -x[2])
-                for rank, (c, ptypes, total, shiny_bonus) in enumerate(scored):
-                    star      = "★ " if rank == 0 else "  "
-                    tstr      = "/".join(ptypes)
-                    shiny_str = "  +50 shiny" if shiny_bonus else ""
-                    lines.append(f"  {star}{c.get('name','?'):<14} [{tstr:<16}]  total = {total:.2f}{shiny_str}")
-                    for i, bt in enumerate(boss_types[:3]):
-                        if not bt:
-                            continue
-                        dmg = _defense_score(ptypes, bt)
-                        res = (1.0 / dmg) if dmg else 4.0
-                        contribution = res * weights[i]
-                        lines.append(
-                            f"      {bt:<14} (×{weights[i]}):  dmg={dmg:.2f}  res={res:.2f}  → {contribution:.2f}"
-                        )
-                    overlapping = [t for t in ptypes if t.capitalize() in coverage]
-                    if overlapping:
-                        lines.append(f"      team overlap: {'/'.join(overlapping)}  → ×0.5 per type")
-
-            # ── Item recommendation ──────────────────────────────────
-            if self.game_screen == ScreenType.ITEM_SELECT:
-                choices  = self.state.get("choices", [])
-                pts_map  = self._item_points_cache
-                attack_types = self._team_attack_types
-                lines.append(f"\nItem Recommendation  (attack types: {', '.join(sorted(attack_types)) or 'none'})\n")
-                scored = []
-                for c in choices:
-                    name  = c.get("name", "?")
-                    desc  = c.get("description", "")
-                    base  = float(pts_map.get(name, 0))
-                    bonus = 0.0
-                    m = _ITEM_TYPE_BOOST_RE.search(desc)
-                    if m:
-                        item_type = m.group(1).capitalize()
-                        if item_type in attack_types:
-                            bonus = 500.0
-                        else:
-                            bonus = -100.0
-                    scored.append((c, base, bonus, base + bonus))
-                scored.sort(key=lambda x: -x[3])
-                for rank, (c, base, bonus, total) in enumerate(scored):
-                    star  = "★ " if rank == 0 else "  "
-                    bonus_str = f"+{bonus:.0f}" if bonus >= 0 else f"{bonus:.0f}"
-                    m2 = _ITEM_TYPE_BOOST_RE.search(c.get("description", ""))
-                    type_tag = f"  [{m2.group(1).capitalize()} boost]" if m2 else ""
-                    lines.append(
-                        f"  {star}{c.get('name','?'):<20}  base={base:.0f}  bonus={bonus_str:<5}  total={total:.0f}{type_tag}"
-                    )
-
-            self.call_from_thread(self.push_screen, JsonScreen("\n".join(lines)))
+            self.call_from_thread(self._execute_item_debug)
         elif isinstance(result, str) and result.startswith("SET_STARTER:"):
             idx = int(result.split(":")[1])
             def _apply(i=idx):
