@@ -494,7 +494,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
                     follow_path_on=None, prioritize_catch_on=None,
                     prioritize_heal_on=None, autoswap_on=None,
                     poke_recommend_on=None, item_recommend_on=None,
-                    autobattle_on=None) -> list[MenuItem]:
+                    autobattle_on=None, prioritize_mystery_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -521,6 +521,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         pr_on  = poke_recommend_on   is not None and poke_recommend_on[0]
         ir_on  = item_recommend_on   is not None and item_recommend_on[0]
         ab_on  = autobattle_on       is not None and autobattle_on[0]
+        pm_on  = prioritize_mystery_on is not None and prioritize_mystery_on[0]
         def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
         def toggle_lp():
             if level_path_on is not None: level_path_on[0] = not level_path_on[0]
@@ -546,6 +547,9 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         def toggle_ab():
             if autobattle_on is not None: autobattle_on[0] = not autobattle_on[0]
             return "AUTOBATTLE_TOGGLED"
+        def toggle_pm():
+            if prioritize_mystery_on is not None: prioritize_mystery_on[0] = not prioritize_mystery_on[0]
+            return "Level Path toggled"
         return [
             MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
             MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
@@ -555,6 +559,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
             MenuItem(_lbl("Poke. Recommend",   pr_on), "R", toggle_pr),
             MenuItem(_lbl("Item Recommend",    ir_on), "I", toggle_ir),
             MenuItem(_lbl("Autobattle",        ab_on), "T", toggle_ab),
+            MenuItem(_lbl("Prio. Mystery",     pm_on), "M", toggle_pm),
             MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -2164,15 +2169,17 @@ def _compute_autoswap_order(team: list, poke_type: str) -> list[int]:
     return [i for i, _, _, _ in scored]
 
 
-def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool):
+def _make_extra_score(prioritize_catch: bool, prioritize_heal: bool, prioritize_mystery: bool = False):
     """Return an extra_score(idx, node) function for the active priority toggles."""
-    if not prioritize_catch and not prioritize_heal:
+    if not prioritize_catch and not prioritize_heal and not prioritize_mystery:
         return None
     def _extra(idx: int, node: dict) -> float:
         bonus = 0.0
         if prioritize_catch and idx == 1:
             bonus += 10.0
         if prioritize_heal and node.get("type") == "pokecenter":
+            bonus += 10.0
+        if prioritize_mystery and node.get("type") == "mystery":
             bonus += 10.0
         return bonus
     return _extra
@@ -3126,6 +3133,7 @@ class PokelikeApp(App):
         self.autobattle_on        = [False]
         self.prioritize_catch_on  = [False]
         self.prioritize_heal_on   = [False]
+        self.prioritize_mystery_on = [False]
         self.poke_recommend_on    = [True]
         self.item_recommend_on    = [True]
         self._item_points_cache: dict[str, int] = {}
@@ -3345,7 +3353,7 @@ class PokelikeApp(App):
                 completed_idxs = [i for i, n in enumerate(_nodes) if n.get("state") == "completed"]
                 last_done = max(completed_idxs) if completed_idxs else 0
                 path = _compute_best_level_path(_nodes, last_done,
-                    _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0]))
+                    _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0], self.prioritize_mystery_on[0]))
                 _acc_list = [n["index"] for n in _nodes if n["accessible"]]
                 for node_idx in path:
                     if node_idx >= len(_nodes): continue
@@ -3529,11 +3537,12 @@ class PokelikeApp(App):
             last_completed = max(completed_idxs) if completed_idxs else 0
             if self.level_path_on[0]:
                 lp_key = (last_completed, tuple(n.get("type", "") for n in nodes_all),
-                          self.prioritize_catch_on[0], self.prioritize_heal_on[0])
+                          self.prioritize_catch_on[0], self.prioritize_heal_on[0],
+                          self.prioritize_mystery_on[0])
                 if lp_key != self._last_level_path_key:
                     self._last_level_path_key = lp_key
                     self.best_level_path[0] = _compute_best_level_path(nodes_all, last_completed,
-                        _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0]))
+                        _make_extra_score(self.prioritize_catch_on[0], self.prioritize_heal_on[0], self.prioritize_mystery_on[0]))
             elif not self.level_path_on[0]:
                 self._last_level_path_key = None
                 self.best_level_path[0] = []
@@ -3792,6 +3801,7 @@ class PokelikeApp(App):
                 self.prioritize_catch_on, self.prioritize_heal_on, self.autoswap_on,
                 self.poke_recommend_on, self.item_recommend_on,
                 autobattle_on=self.autobattle_on,
+                prioritize_mystery_on=self.prioritize_mystery_on,
             )
 
         self.swap_source[0] = None
@@ -3824,18 +3834,22 @@ class PokelikeApp(App):
             def _toggle_ab():
                 self.autobattle_on[0] = not self.autobattle_on[0]
                 return "AUTOBATTLE_TOGGLED"
+            def _toggle_pm():
+                self.prioritize_mystery_on[0] = not self.prioritize_mystery_on[0]
+                return "Level Path toggled"
             def _cancel_utils():
                 self.utils_mode[0] = False
                 return "UTILS_CANCELLED"
             return [
-                MenuItem(_lbl("Level Path",        self.level_path_on[0]),       "U", _toggle_lp),
-                MenuItem(_lbl("Follow Path",        self.follow_path_on[0]),      "F", _toggle_fp),
-                MenuItem(_lbl("Autoswap",           self.autoswap_on[0]),         "A", _toggle_as),
-                MenuItem(_lbl("Prio. First Catch",  self.prioritize_catch_on[0]), "C", _toggle_pc),
-                MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),  "H", _toggle_ph),
-                MenuItem(_lbl("Poke. Recommend",    self.poke_recommend_on[0]),   "R", _toggle_pr),
-                MenuItem(_lbl("Item Recommend",     self.item_recommend_on[0]),   "I", _toggle_ir),
-                MenuItem(_lbl("Autobattle",         self.autobattle_on[0]),       "T", _toggle_ab),
+                MenuItem(_lbl("Level Path",        self.level_path_on[0]),         "U", _toggle_lp),
+                MenuItem(_lbl("Follow Path",        self.follow_path_on[0]),        "F", _toggle_fp),
+                MenuItem(_lbl("Autoswap",           self.autoswap_on[0]),           "A", _toggle_as),
+                MenuItem(_lbl("Prio. First Catch",  self.prioritize_catch_on[0]),   "C", _toggle_pc),
+                MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),    "H", _toggle_ph),
+                MenuItem(_lbl("Poke. Recommend",    self.poke_recommend_on[0]),     "R", _toggle_pr),
+                MenuItem(_lbl("Item Recommend",     self.item_recommend_on[0]),     "I", _toggle_ir),
+                MenuItem(_lbl("Autobattle",         self.autobattle_on[0]),         "T", _toggle_ab),
+                MenuItem(_lbl("Prio. Mystery",      self.prioritize_mystery_on[0]), "M", _toggle_pm),
                 MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
                 MenuItem("Cancel", "X", _cancel_utils),
                 MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -4168,6 +4182,10 @@ class PokelikeApp(App):
         elif result == "AUTOBATTLE_TOGGLED":
             self._force_parse = True
             self.call_from_thread(self._rebuild)
+        elif result == "Level Path toggled":
+            self._follow_last_accessible = frozenset()
+            self._force_parse = True
+            self.call_from_thread(self._rebuild)
         elif result == "UTILS_CANCELLED":
             self._follow_last_accessible = frozenset()
             self._force_parse = True
@@ -4182,11 +4200,28 @@ class PokelikeApp(App):
             if not path:
                 lines.append("No path computed. Enable Level Path first (U → U).")
             else:
-                total = sum(_node_score(nodes[i].get("type", "")) for i in path if i < len(nodes))
-                lines.append(f"Best Level Path  (total score: {total:.1f})\n")
+                extra_fn = _make_extra_score(
+                    self.prioritize_catch_on[0],
+                    self.prioritize_heal_on[0],
+                    self.prioritize_mystery_on[0],
+                )
+                prio_flags = []
+                if self.prioritize_catch_on[0]:   prio_flags.append("Catch")
+                if self.prioritize_heal_on[0]:    prio_flags.append("Heal")
+                if self.prioritize_mystery_on[0]: prio_flags.append("Mystery")
+                prio_str = f"  [{', '.join(prio_flags)}]" if prio_flags else ""
+                total = sum(
+                    _node_score(nodes[i].get("type", "")) + (extra_fn(i, nodes[i]) if extra_fn else 0)
+                    for i in path if i < len(nodes)
+                )
+                lines.append(f"Best Level Path  (total score: {total:.1f}){prio_str}\n")
                 for i in path:
-                    ntype = nodes[i].get("type", "?") if i < len(nodes) else "?"
-                    lines.append(f"  Node {i:2d}  {ntype:<20}  +{_node_score(ntype):.1f}")
+                    if i >= len(nodes): continue
+                    ntype = nodes[i].get("type", "?")
+                    base  = _node_score(ntype)
+                    bonus = extra_fn(i, nodes[i]) if extra_fn else 0.0
+                    bonus_str = f"  +{bonus:.0f} prio" if bonus else ""
+                    lines.append(f"  Node {i:2d}  {ntype:<20}  +{base:.1f}{bonus_str}")
 
             # ── Autoswap order ───────────────────────────────────────
             if team:
