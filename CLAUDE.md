@@ -71,6 +71,7 @@ Several screens use 2D grid navigation instead of a flat list:
 | Prio. First Catch | C | OFF | +10 bonus to catch nodes in path scoring |
 | Prio. Heal | H | OFF | +10 bonus to pokecenter nodes in path scoring |
 | Poke. Recommend | R | ON | Highlights best catch choice based on upcoming 3 boss types; defaults cursor to it |
+| Item Recommend | I | ON | Highlights best item on item select screen; +500 pts for type-boost items matching team types |
 | Debug | G | — | Overlay showing path scores + catch recommendation breakdown with per-boss weights |
 
 All toggle states are stored as 1-element lists (`[bool]`) on the `PokelikeApp` instance so closures can mutate them.

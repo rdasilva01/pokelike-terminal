@@ -22,6 +22,7 @@ from textual.widgets import (
 )
 from textual import work
 
+import item_db
 from browser import connect_to_chrome
 from screen_detector import detect, ScreenType
 from parsers.battle import BattleParser
@@ -294,7 +295,7 @@ class BagPanel(Static):
 
     def update_bag(self, bag: list, follow_on: bool = False,
                    heal_on: bool = False, catch_on: bool = False,
-                   autoswap_on: bool = False) -> None:
+                   autoswap_on: bool = False, autobattle_on: bool = False) -> None:
         t = Text()
         if bag:
             for item in bag:
@@ -310,6 +311,7 @@ class BagPanel(Static):
 
         _row("F", "Follow Path ", follow_on)
         _row("A", "Autoswap    ", autoswap_on)
+        _row("T", "Autobattle  ", autobattle_on)
         _row("H", "Prio. Heal  ", heal_on)
         _row("C", "Prio. Catch ", catch_on)
         t.append("\n")
@@ -491,7 +493,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
                     utils_mode=None, level_path_on=None,
                     follow_path_on=None, prioritize_catch_on=None,
                     prioritize_heal_on=None, autoswap_on=None,
-                    poke_recommend_on=None) -> list[MenuItem]:
+                    poke_recommend_on=None, item_recommend_on=None,
+                    autobattle_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -516,6 +519,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         pc_on  = prioritize_catch_on is not None and prioritize_catch_on[0]
         ph_on  = prioritize_heal_on  is not None and prioritize_heal_on[0]
         pr_on  = poke_recommend_on   is not None and poke_recommend_on[0]
+        ir_on  = item_recommend_on   is not None and item_recommend_on[0]
+        ab_on  = autobattle_on       is not None and autobattle_on[0]
         def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
         def toggle_lp():
             if level_path_on is not None: level_path_on[0] = not level_path_on[0]
@@ -535,6 +540,12 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         def toggle_pr():
             if poke_recommend_on is not None: poke_recommend_on[0] = not poke_recommend_on[0]
             return "Poke. Recommend toggled"
+        def toggle_ir():
+            if item_recommend_on is not None: item_recommend_on[0] = not item_recommend_on[0]
+            return "Item Recommend toggled"
+        def toggle_ab():
+            if autobattle_on is not None: autobattle_on[0] = not autobattle_on[0]
+            return "AUTOBATTLE_TOGGLED"
         return [
             MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
             MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
@@ -542,6 +553,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
             MenuItem(_lbl("Prio. First Catch", pc_on), "C", toggle_pc),
             MenuItem(_lbl("Prio. Heal",        ph_on), "H", toggle_ph),
             MenuItem(_lbl("Poke. Recommend",   pr_on), "R", toggle_pr),
+            MenuItem(_lbl("Item Recommend",    ir_on), "I", toggle_ir),
+            MenuItem(_lbl("Autobattle",        ab_on), "T", toggle_ab),
             MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -1723,27 +1736,38 @@ class ItemSelectCard(Widget):
         padding: 1 2;
         layout: vertical;
     }
-    ItemSelectCard.selected { border: round #f5c518; background: #16163a; }
+    ItemSelectCard.selected     { border: round #f5c518; background: #16163a; }
+    ItemSelectCard.recommended  { border: round #00e676; }
     .isc-shortcut { color: #f5c518; text-style: bold; margin-bottom: 1; }
     .isc-name     { color: #e8e8ff; text-style: bold; margin-bottom: 1; }
     .isc-desc     { color: #9999bb; }
+    .isc-rec      { color: #00e676; text-style: bold; margin-bottom: 1; }
     """
 
-    def __init__(self, choice: dict, shortcut: str, is_selected: bool) -> None:
+    def __init__(self, choice: dict, shortcut: str, is_selected: bool,
+                 is_recommended: bool = False) -> None:
         super().__init__()
-        self._choice   = choice
-        self._shortcut = shortcut
+        self._choice        = choice
+        self._shortcut      = shortcut
+        self._is_recommended = is_recommended
         if is_selected:
             self.add_class("selected")
+        if is_recommended:
+            self.add_class("recommended")
 
     def compose(self) -> ComposeResult:
         c = self._choice
+        if self._is_recommended:
+            yield Label("▲ REC", classes="isc-rec")
         yield Label(f"[ {self._shortcut} ]", classes="isc-shortcut")
         yield Label(c.get("name", "?"),       classes="isc-name")
         yield Label(c.get("description", ""), classes="isc-desc")
 
     def set_selected(self, value: bool) -> None:
         self.set_class(value, "selected")
+
+    def set_recommended(self, value: bool) -> None:
+        self.set_class(value, "recommended")
 
 
 class ItemSelectPanel(Widget):
@@ -1777,7 +1801,8 @@ class ItemSelectPanel(Widget):
         yield Horizontal(id="item-cards")
         yield Horizontal(id="item-strip")
 
-    def rebuild(self, choices: list, strip_items: list, selected: int) -> None:
+    def rebuild(self, choices: list, strip_items: list, selected: int,
+                recommended_idx: int | None = None) -> None:
         shortcuts = "123456789"
         cards_row = self.query_one("#item-cards")
         existing  = list(cards_row.query(ItemSelectCard))
@@ -1789,10 +1814,12 @@ class ItemSelectPanel(Widget):
         if same_data:
             for i, card in enumerate(existing):
                 card.set_selected(i == selected)
+                card.set_recommended(i == recommended_idx)
         else:
             cards_row.query(ItemSelectCard).remove()
             cards_row.mount(*[
-                ItemSelectCard(c, shortcuts[i] if i < len(shortcuts) else "?", i == selected)
+                ItemSelectCard(c, shortcuts[i] if i < len(shortcuts) else "?",
+                               i == selected, i == recommended_idx)
                 for i, c in enumerate(choices)
             ])
 
@@ -2105,6 +2132,24 @@ def _catch_recommend_score(pokemon_types: list, boss_types: list[str],
             if t.capitalize() in team_type_coverage:
                 total *= 0.5
     return total
+
+
+_ITEM_TYPE_BOOST_RE = re.compile(r'\+50%\s+(\w+)(?:-type)?\s+(?:move\s+)?damage', re.IGNORECASE)
+
+
+def _item_recommend_score(item: dict, points_map: dict[str, int],
+                          team_attack_types: set) -> float:
+    name  = item.get("name", "")
+    desc  = item.get("description", "")
+    score = float(points_map.get(name, 0))
+    m = _ITEM_TYPE_BOOST_RE.search(desc)
+    if m:
+        item_type = m.group(1).capitalize()
+        if item_type in team_attack_types:
+            score += 500
+        else:
+            score -= 100
+    return score
 
 
 def _compute_autoswap_order(team: list, poke_type: str) -> list[int]:
@@ -3078,14 +3123,21 @@ class PokelikeApp(App):
         self.level_path_on        = [True]
         self.follow_path_on       = [False]
         self.autoswap_on          = [False]
+        self.autobattle_on        = [False]
         self.prioritize_catch_on  = [False]
         self.prioritize_heal_on   = [False]
         self.poke_recommend_on    = [True]
+        self.item_recommend_on    = [True]
+        self._item_points_cache: dict[str, int] = {}
+        self._team_attack_types: set = set()
         self._upcoming_boss_types: list = []
         self._team_type_coverage: set  = set()
         self.best_level_path = [[]]
         self._last_level_path_key  = None
         self._follow_last_accessible: frozenset = frozenset()
+        self._last_battle_can_continue: bool = False
+        self._item_equip_try_idx: int = 0
+        self._item_equip_last_try: float = 0.0
         self.flash_until     = 0.0
         self._items: list[MenuItem] = []
         self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -3247,6 +3299,16 @@ class PokelikeApp(App):
                            for c in choices]
                 if scores:
                     self.selected = scores.index(max(scores))
+            if new_screen == ScreenType.ITEM_SELECT:
+                choices = new_state.get("choices", [])
+                item_db.upsert_items(choices)
+                self._item_points_cache = item_db.get_scores()
+                if self.item_recommend_on[0] and choices:
+                    scores = [_item_recommend_score(c, self._item_points_cache,
+                                                    self._team_attack_types)
+                              for c in choices]
+                    if scores:
+                        self.selected = scores.index(max(scores))
             self._handle_screen_change_ui(prev, new_screen)
 
         # Cache upcoming boss types and team type coverage whenever map is parsed
@@ -3258,6 +3320,12 @@ class PokelikeApp(App):
                 t.capitalize()
                 for p in new_state.get("team", [])
                 for t in p.get("types", [])
+                if t
+            }
+            self._team_attack_types = {
+                t.capitalize()
+                for p in new_state.get("team", [])
+                for t in p.get("move_types", [])
                 if t
             }
 
@@ -3299,8 +3367,52 @@ class PokelikeApp(App):
                 node = _nodes[_target_node_idx]
                 if node.get("type") in ("trainer", "boss"):
                     self._queue_autoswap(new_state.get("team", []), node.get("poke_type", ""))
-            if self.follow_path_on[0] and _nodes[_target_node_idx].get("type") != "boss":
+            if self.follow_path_on[0] and (_nodes[_target_node_idx].get("type") != "boss" or self.autobattle_on[0]):
                 self._execute_item(_acc_list.index(_target_node_idx))
+
+        # Auto-item: if Follow Path is on and we just entered the item select screen, pick the recommended item
+        if new_screen == ScreenType.ITEM_SELECT and new_screen != prev and self.follow_path_on[0]:
+            def do_auto_item():
+                if self._items and self.selected < len(self._items):
+                    return self._items[self.selected].action()
+                return "No item"
+            self._task_queue.put((do_auto_item, [None], threading.Event()))
+
+        # Auto-equip: if Follow Path is on and we're on the item equip screen,
+        # try each pokemon in order; if still on screen after 2s, advance to the next one
+        if new_screen == ScreenType.ITEM_EQUIP and self.follow_path_on[0]:
+            if new_screen != prev:
+                self._item_equip_try_idx = 0
+                self._item_equip_last_try = time.time()
+                def do_auto_equip():
+                    if self._items:
+                        return self._items[0].action()
+                    return "No action"
+                self._task_queue.put((do_auto_equip, [None], threading.Event()))
+            elif time.time() - self._item_equip_last_try >= 2.0:
+                self._item_equip_try_idx += 1
+                self._item_equip_last_try = time.time()
+                idx = self._item_equip_try_idx
+                def do_auto_equip_next(i=idx):
+                    if self._items and i < len(self._items):
+                        return self._items[i].action()
+                    return "No action"
+                self._task_queue.put((do_auto_equip_next, [None], threading.Event()))
+        elif new_screen != ScreenType.ITEM_EQUIP:
+            self._item_equip_try_idx = 0
+            self._item_equip_last_try = 0.0
+
+        # Auto-battle: if autobattle is on and battle screen shows Continue, click it once
+        if new_screen == ScreenType.BATTLE and self.autobattle_on[0]:
+            can_continue = new_state.get("can_continue", False)
+            if can_continue and not self._last_battle_can_continue:
+                for item in self._items:
+                    if item.shortcut == "C":
+                        self._task_queue.put((item.action, [None], threading.Event()))
+                        break
+            self._last_battle_can_continue = can_continue
+        elif new_screen != ScreenType.BATTLE:
+            self._last_battle_can_continue = False
 
     def _handle_screen_change_ui(self, prev: ScreenType, new: ScreenType) -> None:
         if new in (ScreenType.BADGE_OBTAINED, ScreenType.STARTER_SELECT):
@@ -3397,6 +3509,7 @@ class PokelikeApp(App):
                     heal_on=self.prioritize_heal_on[0],
                     catch_on=self.prioritize_catch_on[0],
                     autoswap_on=self.autoswap_on[0],
+                    autobattle_on=self.autobattle_on[0],
                 )
             except Exception:
                 pass
@@ -3511,8 +3624,16 @@ class PokelikeApp(App):
                 self._last_items_key = items_key
                 choices     = self.state.get("choices", [])
                 strip_items = self._items[len(choices):]
+                rec_idx: int | None = None
+                if self.item_recommend_on[0] and choices:
+                    scores = [_item_recommend_score(c, self._item_points_cache,
+                                                    self._team_attack_types)
+                              for c in choices]
+                    if scores:
+                        rec_idx = scores.index(max(scores))
                 try:
-                    self.query_one(ItemSelectPanel).rebuild(choices, strip_items, self.selected)
+                    self.query_one(ItemSelectPanel).rebuild(choices, strip_items, self.selected,
+                                                            rec_idx)
                 except Exception:
                     pass
             return
@@ -3669,7 +3790,8 @@ class PokelikeApp(App):
                 self.selected_starter, self.swap_source, self.bag_mode,
                 self.utils_mode, self.level_path_on, self.follow_path_on,
                 self.prioritize_catch_on, self.prioritize_heal_on, self.autoswap_on,
-                self.poke_recommend_on,
+                self.poke_recommend_on, self.item_recommend_on,
+                autobattle_on=self.autobattle_on,
             )
 
         self.swap_source[0] = None
@@ -3696,6 +3818,12 @@ class PokelikeApp(App):
             def _toggle_pr():
                 self.poke_recommend_on[0] = not self.poke_recommend_on[0]
                 return "Poke. Recommend toggled"
+            def _toggle_ir():
+                self.item_recommend_on[0] = not self.item_recommend_on[0]
+                return "Item Recommend toggled"
+            def _toggle_ab():
+                self.autobattle_on[0] = not self.autobattle_on[0]
+                return "AUTOBATTLE_TOGGLED"
             def _cancel_utils():
                 self.utils_mode[0] = False
                 return "UTILS_CANCELLED"
@@ -3706,6 +3834,8 @@ class PokelikeApp(App):
                 MenuItem(_lbl("Prio. First Catch",  self.prioritize_catch_on[0]), "C", _toggle_pc),
                 MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),  "H", _toggle_ph),
                 MenuItem(_lbl("Poke. Recommend",    self.poke_recommend_on[0]),   "R", _toggle_pr),
+                MenuItem(_lbl("Item Recommend",     self.item_recommend_on[0]),   "I", _toggle_ir),
+                MenuItem(_lbl("Autobattle",         self.autobattle_on[0]),       "T", _toggle_ab),
                 MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
                 MenuItem("Cancel", "X", _cancel_utils),
                 MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -4035,6 +4165,9 @@ class PokelikeApp(App):
             self._follow_last_accessible = frozenset()
             self._force_parse = True
             self.call_from_thread(self._rebuild)
+        elif result == "AUTOBATTLE_TOGGLED":
+            self._force_parse = True
+            self.call_from_thread(self._rebuild)
         elif result == "UTILS_CANCELLED":
             self._follow_last_accessible = frozenset()
             self._force_parse = True
@@ -4113,6 +4246,36 @@ class PokelikeApp(App):
                     overlapping = [t for t in ptypes if t.capitalize() in coverage]
                     if overlapping:
                         lines.append(f"      team overlap: {'/'.join(overlapping)}  → ×0.5 per type")
+
+            # ── Item recommendation ──────────────────────────────────
+            if self.game_screen == ScreenType.ITEM_SELECT:
+                choices  = self.state.get("choices", [])
+                pts_map  = self._item_points_cache
+                attack_types = self._team_attack_types
+                lines.append(f"\nItem Recommendation  (attack types: {', '.join(sorted(attack_types)) or 'none'})\n")
+                scored = []
+                for c in choices:
+                    name  = c.get("name", "?")
+                    desc  = c.get("description", "")
+                    base  = float(pts_map.get(name, 0))
+                    bonus = 0.0
+                    m = _ITEM_TYPE_BOOST_RE.search(desc)
+                    if m:
+                        item_type = m.group(1).capitalize()
+                        if item_type in attack_types:
+                            bonus = 500.0
+                        else:
+                            bonus = -100.0
+                    scored.append((c, base, bonus, base + bonus))
+                scored.sort(key=lambda x: -x[3])
+                for rank, (c, base, bonus, total) in enumerate(scored):
+                    star  = "★ " if rank == 0 else "  "
+                    bonus_str = f"+{bonus:.0f}" if bonus >= 0 else f"{bonus:.0f}"
+                    m2 = _ITEM_TYPE_BOOST_RE.search(c.get("description", ""))
+                    type_tag = f"  [{m2.group(1).capitalize()} boost]" if m2 else ""
+                    lines.append(
+                        f"  {star}{c.get('name','?'):<20}  base={base:.0f}  bonus={bonus_str:<5}  total={total:.0f}{type_tag}"
+                    )
 
             self.call_from_thread(self.push_screen, JsonScreen("\n".join(lines)))
         elif isinstance(result, str) and result.startswith("SET_STARTER:"):
