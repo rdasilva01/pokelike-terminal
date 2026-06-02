@@ -295,7 +295,7 @@ class BagPanel(Static):
 
     def update_bag(self, bag: list, follow_on: bool = False,
                    heal_on: bool = False, catch_on: bool = False,
-                   autoswap_on: bool = False) -> None:
+                   autoswap_on: bool = False, autobattle_on: bool = False) -> None:
         t = Text()
         if bag:
             for item in bag:
@@ -311,6 +311,7 @@ class BagPanel(Static):
 
         _row("F", "Follow Path ", follow_on)
         _row("A", "Autoswap    ", autoswap_on)
+        _row("T", "Autobattle  ", autobattle_on)
         _row("H", "Prio. Heal  ", heal_on)
         _row("C", "Prio. Catch ", catch_on)
         t.append("\n")
@@ -492,7 +493,8 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
                     utils_mode=None, level_path_on=None,
                     follow_path_on=None, prioritize_catch_on=None,
                     prioritize_heal_on=None, autoswap_on=None,
-                    poke_recommend_on=None, item_recommend_on=None) -> list[MenuItem]:
+                    poke_recommend_on=None, item_recommend_on=None,
+                    autobattle_on=None) -> list[MenuItem]:
     team   = state.get("team", [])
     bag    = state.get("bag", [])
     nodes  = state.get("nodes", [])
@@ -518,6 +520,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         ph_on  = prioritize_heal_on  is not None and prioritize_heal_on[0]
         pr_on  = poke_recommend_on   is not None and poke_recommend_on[0]
         ir_on  = item_recommend_on   is not None and item_recommend_on[0]
+        ab_on  = autobattle_on       is not None and autobattle_on[0]
         def _lbl(label, on): return f"{label}  [bold #00e676]ON[/]" if on else f"{label}  [dim]OFF[/]"
         def toggle_lp():
             if level_path_on is not None: level_path_on[0] = not level_path_on[0]
@@ -540,6 +543,9 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
         def toggle_ir():
             if item_recommend_on is not None: item_recommend_on[0] = not item_recommend_on[0]
             return "Item Recommend toggled"
+        def toggle_ab():
+            if autobattle_on is not None: autobattle_on[0] = not autobattle_on[0]
+            return "AUTOBATTLE_TOGGLED"
         return [
             MenuItem(_lbl("Level Path",        lp_on), "U", toggle_lp),
             MenuItem(_lbl("Follow Path",       fp_on), "F", toggle_fp),
@@ -548,6 +554,7 @@ def build_map_items(state: dict, page, refresh_fn: Callable, selected_starter: i
             MenuItem(_lbl("Prio. Heal",        ph_on), "H", toggle_ph),
             MenuItem(_lbl("Poke. Recommend",   pr_on), "R", toggle_pr),
             MenuItem(_lbl("Item Recommend",    ir_on), "I", toggle_ir),
+            MenuItem(_lbl("Autobattle",        ab_on), "T", toggle_ab),
             MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
             MenuItem("Cancel", "X", lambda: _cancel_all("Cancelled")),
             MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -3116,6 +3123,7 @@ class PokelikeApp(App):
         self.level_path_on        = [True]
         self.follow_path_on       = [False]
         self.autoswap_on          = [False]
+        self.autobattle_on        = [False]
         self.prioritize_catch_on  = [False]
         self.prioritize_heal_on   = [False]
         self.poke_recommend_on    = [True]
@@ -3127,6 +3135,9 @@ class PokelikeApp(App):
         self.best_level_path = [[]]
         self._last_level_path_key  = None
         self._follow_last_accessible: frozenset = frozenset()
+        self._last_battle_can_continue: bool = False
+        self._item_equip_try_idx: int = 0
+        self._item_equip_last_try: float = 0.0
         self.flash_until     = 0.0
         self._items: list[MenuItem] = []
         self._task_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -3356,8 +3367,52 @@ class PokelikeApp(App):
                 node = _nodes[_target_node_idx]
                 if node.get("type") in ("trainer", "boss"):
                     self._queue_autoswap(new_state.get("team", []), node.get("poke_type", ""))
-            if self.follow_path_on[0] and _nodes[_target_node_idx].get("type") != "boss":
+            if self.follow_path_on[0] and (_nodes[_target_node_idx].get("type") != "boss" or self.autobattle_on[0]):
                 self._execute_item(_acc_list.index(_target_node_idx))
+
+        # Auto-item: if Follow Path is on and we just entered the item select screen, pick the recommended item
+        if new_screen == ScreenType.ITEM_SELECT and new_screen != prev and self.follow_path_on[0]:
+            def do_auto_item():
+                if self._items and self.selected < len(self._items):
+                    return self._items[self.selected].action()
+                return "No item"
+            self._task_queue.put((do_auto_item, [None], threading.Event()))
+
+        # Auto-equip: if Follow Path is on and we're on the item equip screen,
+        # try each pokemon in order; if still on screen after 2s, advance to the next one
+        if new_screen == ScreenType.ITEM_EQUIP and self.follow_path_on[0]:
+            if new_screen != prev:
+                self._item_equip_try_idx = 0
+                self._item_equip_last_try = time.time()
+                def do_auto_equip():
+                    if self._items:
+                        return self._items[0].action()
+                    return "No action"
+                self._task_queue.put((do_auto_equip, [None], threading.Event()))
+            elif time.time() - self._item_equip_last_try >= 2.0:
+                self._item_equip_try_idx += 1
+                self._item_equip_last_try = time.time()
+                idx = self._item_equip_try_idx
+                def do_auto_equip_next(i=idx):
+                    if self._items and i < len(self._items):
+                        return self._items[i].action()
+                    return "No action"
+                self._task_queue.put((do_auto_equip_next, [None], threading.Event()))
+        elif new_screen != ScreenType.ITEM_EQUIP:
+            self._item_equip_try_idx = 0
+            self._item_equip_last_try = 0.0
+
+        # Auto-battle: if autobattle is on and battle screen shows Continue, click it once
+        if new_screen == ScreenType.BATTLE and self.autobattle_on[0]:
+            can_continue = new_state.get("can_continue", False)
+            if can_continue and not self._last_battle_can_continue:
+                for item in self._items:
+                    if item.shortcut == "C":
+                        self._task_queue.put((item.action, [None], threading.Event()))
+                        break
+            self._last_battle_can_continue = can_continue
+        elif new_screen != ScreenType.BATTLE:
+            self._last_battle_can_continue = False
 
     def _handle_screen_change_ui(self, prev: ScreenType, new: ScreenType) -> None:
         if new in (ScreenType.BADGE_OBTAINED, ScreenType.STARTER_SELECT):
@@ -3454,6 +3509,7 @@ class PokelikeApp(App):
                     heal_on=self.prioritize_heal_on[0],
                     catch_on=self.prioritize_catch_on[0],
                     autoswap_on=self.autoswap_on[0],
+                    autobattle_on=self.autobattle_on[0],
                 )
             except Exception:
                 pass
@@ -3735,6 +3791,7 @@ class PokelikeApp(App):
                 self.utils_mode, self.level_path_on, self.follow_path_on,
                 self.prioritize_catch_on, self.prioritize_heal_on, self.autoswap_on,
                 self.poke_recommend_on, self.item_recommend_on,
+                autobattle_on=self.autobattle_on,
             )
 
         self.swap_source[0] = None
@@ -3764,6 +3821,9 @@ class PokelikeApp(App):
             def _toggle_ir():
                 self.item_recommend_on[0] = not self.item_recommend_on[0]
                 return "Item Recommend toggled"
+            def _toggle_ab():
+                self.autobattle_on[0] = not self.autobattle_on[0]
+                return "AUTOBATTLE_TOGGLED"
             def _cancel_utils():
                 self.utils_mode[0] = False
                 return "UTILS_CANCELLED"
@@ -3775,6 +3835,7 @@ class PokelikeApp(App):
                 MenuItem(_lbl("Prio. Heal",         self.prioritize_heal_on[0]),  "H", _toggle_ph),
                 MenuItem(_lbl("Poke. Recommend",    self.poke_recommend_on[0]),   "R", _toggle_pr),
                 MenuItem(_lbl("Item Recommend",     self.item_recommend_on[0]),   "I", _toggle_ir),
+                MenuItem(_lbl("Autobattle",         self.autobattle_on[0]),       "T", _toggle_ab),
                 MenuItem("Debug",  "G", lambda: "SHOW_LEVEL_PATH_DEBUG"),
                 MenuItem("Cancel", "X", _cancel_utils),
                 MenuItem("Quit",   "Q", lambda: "QUIT"),
@@ -4102,6 +4163,9 @@ class PokelikeApp(App):
             self.call_from_thread(self.push_screen, JsonScreen(state_json))
         elif result == "FOLLOW_PATH_TOGGLED":
             self._follow_last_accessible = frozenset()
+            self._force_parse = True
+            self.call_from_thread(self._rebuild)
+        elif result == "AUTOBATTLE_TOGGLED":
             self._force_parse = True
             self.call_from_thread(self._rebuild)
         elif result == "UTILS_CANCELLED":
