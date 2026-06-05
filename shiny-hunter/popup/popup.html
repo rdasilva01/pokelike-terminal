@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <span class="star">✦</span> Shiny Hunter
+  </div>
+
+  <div class="field">
+    <label for="target">Pokémon name <span class="hint">(or "any")</span></label>
+    <div class="input-row">
+      <input id="target" type="text" placeholder="e.g. Ralts or Fire" autocomplete="off" spellcheck="false">
+      <button id="dex-btn" title="Browse Pokédex">📖</button>
+    </div>
+  </div>
+
+  <div id="dex-panel" class="dex-panel hidden">
+    <input id="dex-search" type="text" placeholder="Search…" autocomplete="off" spellcheck="false">
+    <div id="dex-list"></div>
+  </div>
+
+  <div class="field speed-field">
+    <label>Delay <span id="speed-val">10</span> ms</label>
+    <input type="range" id="speed" min="10" max="500" value="10" step="10">
+  </div>
+
+  <div class="toggle-row">
+    <span class="toggle-label">✨ Shiny</span>
+    <label class="switch">
+      <input type="checkbox" id="not-shiny">
+      <span class="slider"></span>
+    </label>
+    <span class="toggle-label">Normal</span>
+  </div>
+
+  <div id="status" class="status idle">0 attempts</div>
+
+  <button id="toggle">Start</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>

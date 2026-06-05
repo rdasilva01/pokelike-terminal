@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Shiny Hunter",
+  "version": "1.0",
+  "description": "Automated shiny hunter for pokelike.xyz",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://pokelike.xyz/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://pokelike.xyz/*"],
+      "js": ["content/hunter.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://pokelike.xyz/*"],
+      "js": ["content/bridge.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Shiny Hunter"
+  }
+}
