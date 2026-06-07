@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <span class="bolt">⚡</span> Pokelike Utils
+  </div>
+
+  <!-- Menu screen: list of utilities -->
+  <div id="view-menu" class="view">
+    <div class="menu-item" id="open-speed">
+      <span class="menu-item-label">Animation Speed</span>
+      <span class="menu-item-arrow">›</span>
+    </div>
+    <div class="menu-item" id="open-path">
+      <span class="menu-item-label">Path Recommend</span>
+      <span class="menu-item-arrow">›</span>
+    </div>
+    <div class="menu-item" id="open-hotkeys">
+      <span class="menu-item-label">Catch Hotkeys</span>
+      <span class="menu-item-arrow">›</span>
+    </div>
+  </div>
+
+  <!-- Animation Speed util screen -->
+  <div id="view-speed" class="view hidden">
+    <button id="back-btn" class="back-btn">‹ Back</button>
+
+    <div class="field speed-field">
+      <label>Animation Speed <span id="speed-val">4</span>×</label>
+      <input type="range" id="speed" min="1" max="20" value="4" step="1">
+    </div>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Instant</span>
+      <label class="switch">
+        <input type="checkbox" id="instant">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Off</span>
+      <label class="switch">
+        <input type="checkbox" id="toggle">
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">On</span>
+    </div>
+
+    <div id="status" class="status idle">stopped</div>
+  </div>
+
+  <!-- Path Recommend util screen -->
+  <div id="view-path" class="view hidden">
+    <button id="back-btn-path" class="back-btn">‹ Back</button>
+
+    <p class="util-desc">
+      Highlights the highest-scoring route from your last cleared node to the
+      boss directly on the map screen's nodes and connections.
+    </p>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Off</span>
+      <label class="switch">
+        <input type="checkbox" id="path-toggle">
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">On</span>
+    </div>
+
+    <div id="path-status" class="status idle">stopped</div>
+
+    <p class="util-desc">
+      Prioritize catches &amp; <b>?</b> nodes — routes the recommended path
+      through Catch and Mystery nodes instead of trainers/battles. Path is
+      drawn in red while this is active. Press <b>W</b> in-game to toggle
+      this on/off without opening the popup.
+    </p>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Off</span>
+      <label class="switch">
+        <input type="checkbox" id="path-catch-toggle">
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">On</span>
+    </div>
+  </div>
+
+  <!-- Catch Hotkeys util screen -->
+  <div id="view-hotkeys" class="view hidden">
+    <button id="back-btn-hotkeys" class="back-btn">‹ Back</button>
+
+    <p class="util-desc">
+      On the catch screen, <b>Q</b> rerolls all three Pokémon at once.
+      <b>Numpad 1</b> / <b>2</b> / <b>3</b> work the same as the regular
+      <b>1</b> / <b>2</b> / <b>3</b> keys, and <b>S</b> works the same as
+      <b>Space</b> (skip).
+    </p>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Off</span>
+      <label class="switch">
+        <input type="checkbox" id="hotkeys-toggle">
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">On</span>
+    </div>
+
+    <div id="hotkeys-status" class="status idle">stopped</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

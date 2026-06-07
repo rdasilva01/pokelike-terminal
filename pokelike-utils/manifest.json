@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Pokelike Utils",
+  "version": "1.0",
+  "description": "Miscellaneous utilities for pokelike.xyz",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://pokelike.xyz/*", "http://localhost/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://pokelike.xyz/*", "http://localhost:8080/*"],
+      "js": ["content/utils.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://pokelike.xyz/*", "http://localhost:8080/*"],
+      "js": ["content/path_recommend.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://pokelike.xyz/*", "http://localhost:8080/*"],
+      "js": ["content/catch_hotkeys.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://pokelike.xyz/*", "http://localhost:8080/*"],
+      "js": ["content/bridge.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Pokelike Utils"
+  }
+}
