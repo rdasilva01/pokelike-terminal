@@ -45,6 +45,14 @@
   let drawTimer = null;
   let catchPriority = false;
 
+  // Auto-follow state (toggled by E): clicks each accessible node along the
+  // recommended path as it becomes reachable, and turns itself off (without
+  // clicking) as soon as the boss node is the next one up — leaving the boss
+  // fight for the player to start manually.
+  const FOLLOW_BADGE_ID = 'pokelike-path-follow-badge';
+  let following = false;
+  let lastAccessibleKey = null;
+
   function pathColor() {
     return catchPriority ? COLOR_CATCH_PRIORITY : COLOR_NORMAL;
   }
@@ -197,6 +205,83 @@
     return svg ? { container, svg } : null;
   }
 
+  function ensureFollowBadge(container) {
+    let el = document.getElementById(FOLLOW_BADGE_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = FOLLOW_BADGE_ID;
+      el.textContent = 'AUTO-FOLLOW';
+      el.style.cssText = `
+        position: fixed;
+        z-index: 9999;
+        pointer-events: none;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 10px;
+        font-weight: bold;
+        letter-spacing: 1px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: rgba(0,20,40,0.7);
+        text-shadow: 0 0 4px rgba(0,0,0,0.7);
+      `;
+      document.body.appendChild(el);
+    }
+    el.style.color = pathColor();
+    el.style.border = `2px solid ${pathColor()}`;
+    const rect = container.getBoundingClientRect();
+    el.style.left = `${rect.left + 8}px`;
+    el.style.top = `${rect.top + 8}px`;
+    return el;
+  }
+
+  function removeFollowBadge() {
+    document.getElementById(FOLLOW_BADGE_ID)?.remove();
+  }
+
+  // Clicks the actual SVG <g> rendered at a node's computed position — the
+  // game wires its onNodeClick handler to that element's 'click' event
+  // (see CLAUDE.md / map.js renderMap), so dispatching one there drives the
+  // exact same behaviour as a real click.
+  function clickMapNode(svg, pos) {
+    if (!pos) return false;
+    const pt = svg.createSVGPoint();
+    pt.x = pos.x;
+    pt.y = pos.y;
+    const screenPt = pt.matrixTransform(svg.getScreenCTM());
+    const el = document.elementFromPoint(screenPt.x, screenPt.y);
+    const g = el?.closest('g');
+    if (!g) return false;
+    g.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return true;
+  }
+
+  // Auto-clicks the next reachable node along the recommended path. Stops
+  // itself (without clicking) as soon as the next node along the path is the
+  // boss — leaving the boss fight for the player to start manually.
+  function tryAutoFollow(map, path, svg, container) {
+    ensureFollowBadge(container);
+
+    const accessible = Object.values(map.nodes).filter((n) => n.accessible && !n.visited);
+    const key = accessible.map((n) => n.id).sort().join(',');
+    if (!accessible.length || key === lastAccessibleKey) return;
+
+    const nextId = path.find((id) => accessible.some((n) => n.id === id));
+    if (!nextId) return;
+
+    if (map.nodes[nextId]?.type === 'boss') {
+      following = false;
+      lastAccessibleKey = null;
+      removeFollowBadge();
+      postStatus();
+      return;
+    }
+
+    const positions = computePositions(map, container);
+    if (!clickMapNode(svg, positions[nextId])) return;
+
+    lastAccessibleKey = key;
+  }
+
   function draw() {
     const found = findMapSvg();
     const map = found ? readMap() : null;
@@ -215,6 +300,7 @@
     }
 
     updateNextNodeIndicator(map, path, container);
+    if (following) tryAutoFollow(map, path, svg, container);
 
     // renderMap() does `container.innerHTML = ''` on every (re)render, wiping
     // any overlay we previously appended — so re-create it fresh each tick
@@ -265,20 +351,33 @@
   function onKeyDown(e) {
     if (!running || e[SYNTHETIC_FLAG]) return;
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-    if (e.code !== 'KeyW' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-    e.preventDefault();
-    catchPriority = !catchPriority;
-    clearOverlay();
-    removeIndicator();
-    draw();
-    postStatus();
+    if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+
+    if (e.code === 'KeyW') {
+      e.preventDefault();
+      catchPriority = !catchPriority;
+      clearOverlay();
+      removeIndicator();
+      draw();
+      postStatus();
+      return;
+    }
+
+    if (e.code === 'KeyE') {
+      e.preventDefault();
+      following = !following;
+      lastAccessibleKey = null;
+      if (!following) removeFollowBadge();
+      postStatus();
+      return;
+    }
   }
   document.addEventListener('keydown', onKeyDown);
 
   function postStatus() {
     window.postMessage({
       source: 'pokelike-path-main',
-      payload: { status: running ? 'running' : 'stopped', catchPriority },
+      payload: { status: running ? 'running' : 'stopped', catchPriority, following },
     }, '*');
   }
 
@@ -297,6 +396,9 @@
     if (drawTimer) { clearInterval(drawTimer); drawTimer = null; }
     clearOverlay();
     removeIndicator();
+    removeFollowBadge();
+    following = false;
+    lastAccessibleKey = null;
     postStatus();
   }
 
