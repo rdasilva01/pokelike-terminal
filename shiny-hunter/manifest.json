@@ -4,16 +4,16 @@
   "version": "1.0",
   "description": "Automated shiny hunter for pokelike.xyz",
   "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["https://pokelike.xyz/*"],
+  "host_permissions": ["https://pokelike.xyz/*", "http://localhost/*"],
   "content_scripts": [
     {
-      "matches": ["https://pokelike.xyz/*"],
+      "matches": ["https://pokelike.xyz/*", "http://localhost:8080/*"],
       "js": ["content/hunter.js"],
       "world": "MAIN",
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://pokelike.xyz/*"],
+      "matches": ["https://pokelike.xyz/*", "http://localhost:8080/*"],
       "js": ["content/bridge.js"],
       "world": "ISOLATED",
       "run_at": "document_idle"

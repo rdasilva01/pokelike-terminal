@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pokemon Roguelike</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7248020241477812"
+       crossorigin="anonymous"></script>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-7B6G2K0W0K"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-7B6G2K0W0K');
+  </script>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Team hover card popup -->
+<div id="team-hover-card"></div>
+
+<!-- ===== TITLE SCREEN ===== -->
+<div id="title-screen" class="screen">
+  <div class="game-logo">POKELIKE</div>
+  <div class="game-subtitle">Pokemon Roguelike</div>
+  <div style="color:var(--text-dim);font-size:9px;margin-bottom:6px;cursor:pointer;" onclick="openPatchNotesModal()">v1.6 — patch notes</div>
+  <button id="btn-continue-run" class="btn-primary" style="display:none;margin-bottom:10px;">Continue Run</button>
+  <button id="btn-continue-endless" class="btn-primary" style="display:none;margin-bottom:10px;">Continue Battle Tower</button>
+  <div class="gen-toggle-wrap">
+    <span class="gen-toggle-label">Gen:</span>
+    <div id="gen-toggle" class="gen-toggle" title="Choose generation">
+      <button class="gen-btn gen-btn--active" data-gen="1" aria-label="Gen 1 (Kanto)">I</button>
+      <button class="gen-btn" data-gen="2" aria-label="Gen 2 (Johto)">II</button>
+    </div>
+  </div>
+  <button id="btn-new-run" class="btn-primary">Normal Mode</button>
+  <button id="btn-hard-run" class="btn-primary" style="margin-top:6px;" title="Hardcore mode — any Pokémon that faints in battle is lost permanently. Exception: rival (Silver) battles won't permanently faint your team if you win.">Nuzlocke</button>
+  <button id="btn-endless-run" class="btn-primary" style="margin-top:6px;">Battle Tower</button>
+  <div style="display:flex;gap:8px;margin-top:8px;">
+    <button onclick="openPokedexModal()" class="btn-secondary">📖 Pokédex</button>
+    <button onclick="openAchievementsModal()" class="btn-secondary">🏆 Achievements</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:6px;">
+    <button onclick="openHallOfFameModal()" class="btn-secondary">🏛️ Hall of Fame</button>
+    <button onclick="openPatchNotesModal()" class="btn-secondary">📋 Patch Notes</button>
+    <button onclick="openSettingsModal()" class="btn-secondary">⚙️ Settings</button>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:6px;">
+    <button id="btn-cloud-sync" class="btn-secondary">☁ Save Code</button>
+    <div id="cloud-sync-info" style="color:var(--text-dim);font-size:8px;display:none;"></div>
+  </div>
+  <a href="https://discord.gg/YsakfWStYq" target="_blank" rel="noopener" class="discord-link">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    Join Discord
+  </a>
+  <div style="margin-top:6px;">
+    <a href="privacy.html" style="color:var(--text-dim);font-size:8px;text-decoration:none;">Privacy Policy</a>
+  </div>
+  <div style="margin-top:10px;max-width:340px;color:var(--text-dim);font-size:8px;opacity:0.6;line-height:1.4;text-align:center;padding:0 10px;">
+    Fan-made project. Not affiliated with, endorsed by, or sponsored by Nintendo, Game Freak, or The Pokémon Company. All Pokémon names and sprites are property of their respective owners.
+  </div>
+</div>
+
+<!-- ===== TRAINER SELECT ===== -->
+<div id="trainer-screen" class="screen">
+  <h2>Who are you?</h2>
+  <div id="trainer-choices">
+    <div class="trainer-card" id="trainer-boy" role="button" tabindex="0">
+      <div class="trainer-icon-wrap"></div>
+      <div class="trainer-label" style="color:#cc1111">BOY</div>
+    </div>
+    <div class="trainer-card" id="trainer-girl" role="button" tabindex="0">
+      <div class="trainer-icon-wrap"></div>
+      <div class="trainer-label" style="color:#33aa33">GIRL</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== STARTER SELECT ===== -->
+<div id="starter-screen" class="screen">
+  <h2>Choose Your Starter!</h2>
+  <div id="starter-layout">
+    <div id="starter-choices"></div>
+    <div id="starter-region-panel" style="display:none;"></div>
+  </div>
+</div>
+
+<!-- Map node tooltip -->
+<div id="map-node-tooltip"></div>
+<!-- Item tooltip -->
+<div id="item-tooltip"></div>
+<!-- Trait tooltip (tap on mobile) -->
+<div id="trait-tooltip"></div>
+
+<!-- ===== MAP SCREEN ===== -->
+<div id="map-screen" class="screen">
+  <!-- Mobile-only header -->
+  <div class="map-header">
+    <div id="map-info"></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div id="badge-count"></div>
+      <button onclick="openPokedexModal()" class="btn-icon-sm" title="Pokédex"><img src="ui/pokedex.png" alt="Pokédex"></button>
+      <button onclick="openAchievementsModal()" class="btn-icon-sm" title="Achievements"><img src="ui/achievements.png" alt="Achievements"></button>
+      <button onclick="openSettingsModal()" class="btn-icon-sm" title="Settings"><img src="ui/settings.png" alt="Settings"></button>
+      <button onclick="confirmResetRun()" class="btn-icon-sm btn-icon-glyph" title="Restart run">↻</button>
+    </div>
+  </div>
+
+  <!-- Desktop-only top-right buttons -->
+  <div class="map-actions">
+    <button onclick="openPokedexModal()" class="btn-icon-sm" title="Pokédex"><img src="ui/pokedex.png" alt="Pokédex"></button>
+    <button onclick="openAchievementsModal()" class="btn-icon-sm" title="Achievements"><img src="ui/achievements.png" alt="Achievements"></button>
+    <button onclick="openSettingsModal()" class="btn-icon-sm" title="Settings"><img src="ui/settings.png" alt="Settings"></button>
+    <button onclick="confirmResetRun()" class="btn-icon-sm btn-icon-glyph" title="Restart run">↻</button>
+  </div>
+
+  <div class="map-panels">
+    <div id="endless-trait-panel" class="hud-box map-panel-traits" style="display:none;"></div>
+    <div class="hud-box map-panel-left">
+      <div class="hud-label">TEAM</div>
+      <div id="team-bar"></div>
+    </div>
+    <div class="hud-box map-panel-right">
+      <div class="hud-label">ITEMS</div>
+      <div id="item-bar"></div>
+      <div class="hud-label map-badges-label">BADGES</div>
+      <div id="badge-count-panel"></div>
+    </div>
+    <div id="endless-region-panel" class="hud-box map-panel-region" style="display:none;"></div>
+  </div>
+
+  <div id="map-container"></div>
+</div>
+
+<!-- ===== BATTLE SCREEN ===== -->
+<div id="battle-screen" class="screen">
+  <div class="battle-header">
+    <h2 id="battle-title">Wild Battle!</h2>
+    <p id="battle-subtitle"></p>
+  </div>
+
+  <div class="battle-controls">
+    <button id="btn-auto-battle" class="btn-primary">Skip</button>
+    <button id="btn-continue-battle" class="btn-primary" style="display:none">Continue</button>
+  </div>
+
+  <div class="battle-field">
+    <div class="battle-side">
+      <div class="battle-trainer" id="player-trainer-icon"></div>
+      <div class="battle-side-label">Your Team</div>
+      <div id="player-battle-traits" class="battle-trait-bar"></div>
+      <div id="player-side"></div>
+    </div>
+    <div class="battle-side">
+      <div class="battle-trainer" id="enemy-trainer-icon"></div>
+      <div class="battle-side-label" id="enemy-side-label">Enemy</div>
+      <div id="enemy-battle-traits" class="battle-trait-bar battle-trait-bar-right"></div>
+      <div id="enemy-side"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CATCH SCREEN ===== -->
+<div id="catch-screen" class="screen">
+  <h2>⬟ Wild Pokemon Appeared!</h2>
+  <p style="text-align:center;color:var(--text-dim);font-size:12px;">Choose one Pokemon to add to your team</p>
+  <div id="catch-choices"></div>
+  <div style="text-align:center;margin-top:12px;">
+    <button id="btn-skip-catch" class="btn-secondary">Skip (flee)</button>
+  </div>
+  <div id="catch-team-bar" class="screen-team-bar"></div>
+</div>
+
+<!-- ===== ITEM SCREEN ===== -->
+<div id="item-screen" class="screen">
+  <h2>✦ Item Found!</h2>
+  <p style="text-align:center;color:var(--text-dim);font-size:12px;">Choose one item to keep</p>
+  <div id="item-choices"></div>
+  <div style="text-align:center;margin-top:12px;">
+    <button id="btn-skip-item" class="btn-secondary">Skip</button>
+  </div>
+  <div id="item-team-bar" class="screen-team-bar"></div>
+</div>
+
+<!-- ===== SWAP SCREEN ===== -->
+<div id="swap-screen" class="screen">
+  <h2>Team Full!</h2>
+  <p id="swap-prompt" class="swap-prompt"></p>
+  <div id="swap-choices"></div>
+  <div id="swap-incoming"></div>
+  <div style="text-align:center;margin-top:12px;">
+    <button id="btn-cancel-swap" class="btn-secondary">Keep team as-is</button>
+  </div>
+</div>
+
+<!-- ===== TRADE SCREEN ===== -->
+<div id="trade-screen" class="screen">
+  <h2>⇄ Trade Offer</h2>
+  <p id="trade-desc"></p>
+  <ul id="trade-team-list"></ul>
+  <div class="trade-footer">
+    <button id="btn-skip-trade" class="btn-secondary">Decline</button>
+  </div>
+</div>
+
+<!-- ===== SHINY SCREEN ===== -->
+<div id="shiny-screen" class="screen">
+  <div id="shiny-content"></div>
+</div>
+
+<!-- ===== BADGE SCREEN ===== -->
+<div id="badge-screen" class="screen">
+  <img id="badge-icon-img" class="badge-icon" src="" alt="Badge">
+  <div id="badge-msg">Badge Earned!</div>
+  <div id="badge-leader"></div>
+  <div id="badge-count-display">Badges: 0/8</div>
+  <button id="btn-next-map" class="btn-primary">Next Map →</button>
+</div>
+
+<!-- ===== TRANSITION SCREEN ===== -->
+<div id="transition-screen" class="screen">
+  <div id="transition-msg"></div>
+  <div id="transition-sub"></div>
+</div>
+
+<!-- ===== ELITE PREP SCREEN ===== -->
+<div id="elite-prep-screen" class="screen">
+  <div id="elite-prep-title"></div>
+  <div id="elite-prep-sub"></div>
+
+  <div class="elite-prep-section">
+    <div class="elite-prep-section-label">Next Opponent's Team</div>
+    <div id="elite-prep-enemy-team"></div>
+  </div>
+
+  <div class="elite-prep-section">
+    <div class="elite-prep-section-label">Your Team — drag to reorder</div>
+    <div id="elite-prep-player-team"></div>
+  </div>
+
+  <div class="elite-prep-section">
+    <div class="elite-prep-section-label">Items — click to use</div>
+    <div id="elite-prep-items"></div>
+  </div>
+
+  <button id="btn-elite-prep-continue" class="btn-primary">Continue →</button>
+</div>
+
+<!-- ===== GAME OVER ===== -->
+<div id="gameover-screen" class="screen">
+  <div class="gameover-title">GAME OVER</div>
+  <div id="gameover-badges"></div>
+  <div id="gameover-team"></div>
+  <button id="btn-retry" class="btn-primary">Try Again</button>
+  <a href="https://discord.gg/YsakfWStYq" target="_blank" rel="noopener" class="discord-link">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    Join Discord
+  </a>
+</div>
+
+<!-- ===== WIN SCREEN ===== -->
+<div id="win-screen" class="screen">
+  <div class="win-title">YOU ARE THE<br>CHAMPION!</div>
+  <p style="color:var(--text-dim);">Congratulations! You defeated the Elite Four!</p>
+  <div id="win-run-count" style="color:gold;font-size:13px;font-weight:bold;margin-bottom:8px;"></div>
+  <div id="win-team"></div>
+  <div style="display:flex;gap:8px;justify-content:center;margin-top:8px;flex-wrap:wrap;">
+    <button id="btn-play-again" class="btn-primary">Play Again</button>
+    <button onclick="shareRun()" class="btn-secondary" style="border-color:#c8a0ff;color:#c8a0ff;">📤 Share</button>
+    <button onclick="showEndlessStageSelect()" class="btn-secondary" style="border-color:#ffd700;color:#ffd700;">🗼 Climb the Tower</button>
+  </div>
+  <div style="display:flex;gap:8px;justify-content:center;margin-top:6px;">
+    <button onclick="openHallOfFameModal()" class="btn-secondary">🏛️ Hall of Fame</button>
+  </div>
+  <a href="https://discord.gg/YsakfWStYq" target="_blank" rel="noopener" class="discord-link">
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    Join Discord
+  </a>
+</div>
+
+<!-- ===== STAT BUFF SCREEN ===== -->
+<div id="stat-buff-screen" class="screen">
+  <h2 id="stat-buff-title"></h2>
+  <p id="stat-buff-subtitle" style="text-align:center;color:var(--text-dim);font-size:10px;margin-bottom:16px;"></p>
+  <div id="stat-buff-choices"></div>
+</div>
+
+<!-- ===== ENDLESS STAGE SELECT ===== -->
+<div id="endless-stage-select" class="screen">
+  <div style="font-family:'Press Start 2P',monospace;font-size:13px;color:#c8a0ff;text-align:center;margin-bottom:6px;">⚔ Battle Tower</div>
+  <div style="font-size:8px;color:var(--text-dim);text-align:center;margin-bottom:18px;">Choose a stage to begin</div>
+  <div id="stage-select-list" style="display:flex;flex-direction:column;gap:8px;align-items:center;"></div>
+  <div style="text-align:center;margin-top:16px;">
+    <button onclick="showScreen('title-screen')" class="btn-secondary">← Back</button>
+  </div>
+</div>
+
+<!-- ===== ENDLESS STAGE COMPLETE ===== -->
+<div id="endless-stage-complete" class="screen">
+  <div id="stage-complete-msg" class="win-title" style="font-size:14px;"></div>
+  <div id="stage-complete-unlock" style="font-size:8px;color:#c8a0ff;text-align:center;margin:6px 0;"></div>
+  <div id="stage-complete-team" style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:12px 0;"></div>
+  <div style="display:flex;gap:8px;justify-content:center;">
+    <button id="btn-stage-continue" class="btn-primary">Stage Select →</button>
+    <button id="btn-stage-share" class="btn-secondary" style="border-color:#c8a0ff;color:#c8a0ff;">📤 Share</button>
+  </div>
+</div>
+
+<!-- ===== EVOLUTION OVERLAY ===== -->
+<div id="evo-overlay" style="display:none;position:fixed;inset:0;z-index:200;background:#000;
+     align-items:center;justify-content:center;flex-direction:column;gap:20px;">
+  <div id="evo-msg" style="font-family:'Press Start 2P',monospace;font-size:11px;color:#fff;
+       text-align:center;line-height:1.8;max-width:280px;padding:0 16px;"></div>
+  <img id="evo-sprite" style="width:96px;height:96px;image-rendering:pixelated;">
+</div>
+
+<!-- ===== EEVEE CHOICE OVERLAY ===== -->
+<div id="eevee-choice-overlay" style="display:none;position:fixed;inset:0;z-index:201;background:rgba(0,0,0,0.88);
+     align-items:center;justify-content:center;flex-direction:column;gap:18px;">
+  <div id="evo-choice-title" style="font-family:'Press Start 2P',monospace;font-size:10px;color:#fff;text-align:center;line-height:1.8;">
+    Choose its evolution:
+  </div>
+  <div id="eevee-choices" style="display:flex;flex-wrap:wrap;justify-content:center;gap:16px;max-width:min(90vw,700px);"></div>
+</div>
+
+<!-- Attack animation canvas (fixed over viewport) -->
+<canvas id="battle-anim-canvas" style="position:fixed;inset:0;pointer-events:none;z-index:150;display:none;"></canvas>
+
+<!-- Scripts (order matters) -->
+<script src="js/data.js"></script>
+<script src="js/map.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/endless.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+<script src="js/cloud-save.js"></script>
+</body>
+</html>

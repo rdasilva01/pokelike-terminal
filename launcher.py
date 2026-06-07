@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+from config import LOCAL_URL, USE_LOCAL
+
 if sys.platform == "win32":
     CHROME_PATHS = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -15,10 +17,12 @@ else:
     CHROME_PATHS = []   # resolved via PATH on Linux
     CHROME_USER_DATA = str(Path.home() / ".chrome-debug")
 
+_START_URL = LOCAL_URL if USE_LOCAL else "https://pokelike.xyz/"
+
 CHROME_ARGS = [
     "--remote-debugging-port=9222",
     f"--user-data-dir={CHROME_USER_DATA}",
-    "https://pokelike.xyz/",
+    _START_URL,
 ]
 
 # Linux binary names to try (in order)

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Unlock All — pokelike local</title>
+  <style>
+    body { background: #1a1a2e; color: #eee; font-family: monospace; display: flex;
+           flex-direction: column; align-items: center; justify-content: center;
+           height: 100vh; margin: 0; gap: 12px; }
+    h2   { color: #ffe066; margin: 0; }
+    #log { font-size: 12px; opacity: 0.7; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2>🔓 Unlock All</h2>
+  <div id="log">Setting localStorage keys…</div>
+
+  <script>
+    const log = document.getElementById('log');
+    const lines = [];
+    function note(msg) { lines.push(msg); log.textContent = lines.join('\n'); }
+
+    // ── Starters per endless stage ────────────────────────────────────────────
+    const STAGE_STARTERS = {
+      1: [1,   4,   7],    // Kanto
+      2: [152, 155, 158],  // Johto
+      3: [252, 255, 258],  // Hoenn
+      4: [387, 390, 393],  // Sinnoh
+      5: [495, 498, 501],  // Unova
+    };
+
+    // ── Hall of Fame: one dummy entry per stage so getHallOfFame().length > 0
+    //    and the hof-index rebuild picks up all stage completions.
+    const hofEntries = [];
+    let runNumber = 1;
+    for (const [stage, starters] of Object.entries(STAGE_STARTERS)) {
+      for (const starterId of starters) {
+        hofEntries.push({
+          savedAt: Date.now() - (600 - runNumber) * 1000,
+          runNumber: runNumber++,
+          hardMode: false,
+          endless: true,
+          gen2Mode: false,
+          stageNumber: Number(stage),
+          starterSpeciesId: starterId,
+          date: new Date().toLocaleDateString(),
+          team: [{ speciesId: starterId }],
+        });
+      }
+    }
+    // One normal-mode win (unlocks Endless button)
+    hofEntries.push({
+      savedAt: Date.now(),
+      runNumber: runNumber,
+      hardMode: false,
+      endless: false,
+      gen2Mode: false,
+      stageNumber: null,
+      starterSpeciesId: 1,
+      date: new Date().toLocaleDateString(),
+      team: [{ speciesId: 1 }],
+    });
+
+    // One big "all-species" endless entry so every Pokémon shows up in the HoF PC.
+    // The PC is populated by scanning entry.team for evo-line roots, so we need
+    // every species present in at least one team entry.
+    const allSpeciesTeam = [];
+    for (let id = 1; id <= 649; id++) allSpeciesTeam.push({ speciesId: id });
+    hofEntries.push({
+      savedAt: Date.now() + 1,
+      runNumber: ++runNumber,
+      hardMode: false,
+      endless: true,
+      gen2Mode: false,
+      stageNumber: 5,
+      starterSpeciesId: 1,
+      date: new Date().toLocaleDateString(),
+      team: allSpeciesTeam,
+    });
+
+    localStorage.setItem('poke_hall_of_fame', JSON.stringify(hofEntries));
+    note(`✓ poke_hall_of_fame  (${hofEntries.length} entries, all 649 species in PC)`);
+
+    // ── HoF index: highest stage + all evo roots + all starter runs ──────────
+    const allStarters = Object.values(STAGE_STARTERS).flat();
+    const starterRuns = Object.entries(STAGE_STARTERS).flatMap(
+      ([stage, ids]) => ids.map(id => `${stage}:${id}`)
+    );
+
+    const hofIndex = {
+      evoLineRoots:    allStarters,
+      starterRuns:     starterRuns,
+      maxEndlessStage: 5,
+    };
+    localStorage.setItem('poke_hof_index', JSON.stringify(hofIndex));
+    note(`✓ poke_hof_index     (maxEndlessStage=5, ${starterRuns.length} starterRuns)`);
+
+    // ── Pokédex: mark all 649 species as caught (1 = caught) ─────────────────
+    const dex = {};
+    for (let id = 1; id <= 649; id++) dex[id] = 1;
+    localStorage.setItem('poke_dex', JSON.stringify(dex));
+    note('✓ poke_dex           (649 species caught)');
+
+    // ── Elite wins (achievements) ─────────────────────────────────────────────
+    localStorage.setItem('poke_elite_wins', '20');
+    note('✓ poke_elite_wins    (20)');
+
+    // ── Tutorial seen ─────────────────────────────────────────────────────────
+    localStorage.setItem('poke_tutorial_seen', 'true');
+    note('✓ poke_tutorial_seen (true)');
+
+    note('');
+    note('Redirecting to game…');
+    setTimeout(() => { window.location.href = '/'; }, 1200);
+  </script>
+</body>
+</html>

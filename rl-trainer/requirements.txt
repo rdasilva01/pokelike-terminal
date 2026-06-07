@@ -1,0 +1,6 @@
+gymnasium>=0.29
+stable-baselines3>=2.3
+sb3-contrib>=2.3
+playwright>=1.44
+numpy>=1.26
+tensorboard>=2.14
